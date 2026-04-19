@@ -1,0 +1,23 @@
+{
+  "name": "altair-vega-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build --base='./'",
+    "preview": "vite preview",
+    "build:wasm": "wasm-pack build ../browser-wasm --dev --weak-refs --reference-types -t bundler -d pkg",
+    "build:wasm:release": "wasm-pack build ../browser-wasm --release --weak-refs --reference-types -t bundler -d pkg"
+  },
+  "dependencies": {
+    "altair-vega-browser": "file:./pkg"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^7.1.11",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.5.0",
+    "ws": "^8.18.3"
+  }
+}

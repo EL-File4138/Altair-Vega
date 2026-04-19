@@ -1,9 +1,12 @@
 pub mod bootstrap;
 pub mod code;
 pub mod control;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod files;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod messaging;
 pub mod pairing;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod probe;
 pub mod rendezvous;
 
@@ -14,14 +17,17 @@ pub use control::{
     FileChunkRange, FileDescriptor, FileOffer, FileProgress, FileProgressPhase, FileResponse,
     FileResumeInfo, FileTicket, FileTransport,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use files::{
     FileProbeConfig, FileProbeMode, FileProbeOutcome, NativeResumeProbeOutcome,
     run_local_file_probe, run_local_file_probe_with_config, run_local_native_resume_probe,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use messaging::{MessagingProbeOutcome, run_local_message_probe};
 pub use pairing::{
     EstablishedPairing, PairingError, PairingHandshake, PairingIntroEnvelope, PairingPhase,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use probe::{PairingProbeOutcome, run_local_pairing_probe};
 pub use rendezvous::{
     ClientMessage as RendezvousClientMessage, JoinRequest as RendezvousJoinRequest,

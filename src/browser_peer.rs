@@ -7,7 +7,11 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::{fs, io::AsyncWriteExt};
 use tokio_tungstenite::connect_async;
 use url::Url;
@@ -37,17 +41,16 @@ struct BrowserPeerFileHandler {
     output_dir: PathBuf,
 }
 
-pub async fn run_browser_peer(
-    code: String,
-    room_url: String,
-    output_dir: PathBuf,
-) -> Result<()> {
+pub async fn run_browser_peer(code: String, room_url: String, output_dir: PathBuf) -> Result<()> {
     fs::create_dir_all(&output_dir)
         .await
         .with_context(|| format!("create browser peer output dir at {}", output_dir.display()))?;
 
     let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-        .alpns(vec![BROWSER_MESSAGE_ALPN.to_vec(), BROWSER_FILE_ALPN.to_vec()])
+        .alpns(vec![
+            BROWSER_MESSAGE_ALPN.to_vec(),
+            BROWSER_FILE_ALPN.to_vec(),
+        ])
         .bind()
         .await
         .context("bind native browser-peer endpoint")?;
@@ -92,7 +95,10 @@ pub async fn run_browser_peer(
         } => {}
     }
 
-    router.shutdown().await.context("shutdown browser peer router")?;
+    router
+        .shutdown()
+        .await
+        .context("shutdown browser peer router")?;
     Ok(())
 }
 
@@ -100,7 +106,10 @@ impl ProtocolHandler for BrowserPeerMessageHandler {
     async fn accept(&self, connection: Connection) -> std::result::Result<(), AcceptError> {
         let remote_id = connection.remote_id().to_string();
         let (mut send, mut recv) = connection.accept_bi().await?;
-        let bytes = recv.read_to_end(MAX_MESSAGE_BYTES).await.map_err(map_accept_error)?;
+        let bytes = recv
+            .read_to_end(MAX_MESSAGE_BYTES)
+            .await
+            .map_err(map_accept_error)?;
         let packet: BrowserPacket = serde_json::from_slice(&bytes).map_err(map_accept_error)?;
         println!("browser message from {remote_id}: {}", packet.body);
         send.write_all(b"ok").await.map_err(map_accept_error)?;
@@ -133,7 +142,10 @@ impl ProtocolHandler for BrowserPeerFileHandler {
 
         let mut chunks = BTreeMap::<u64, Vec<u8>>::new();
         let mut total_bytes = 0u64;
-        while let Some(chunk_index) = read_chunk_index(&mut recv).await.map_err(map_accept_error)? {
+        while let Some(chunk_index) = read_chunk_index(&mut recv)
+            .await
+            .map_err(map_accept_error)?
+        {
             let mut chunk_header_rest = [0u8; FILE_CHUNK_HEADER_BYTES - 8];
             read_exact_or_error(&mut recv, &mut chunk_header_rest)
                 .await
@@ -188,9 +200,7 @@ impl ProtocolHandler for BrowserPeerFileHandler {
     }
 }
 
-async fn read_chunk_index(
-    recv: &mut iroh::endpoint::RecvStream,
-) -> Result<Option<u64>> {
+async fn read_chunk_index(recv: &mut iroh::endpoint::RecvStream) -> Result<Option<u64>> {
     let mut chunk_index_buf = [0u8; 8];
     if !read_exact_or_eof(recv, &mut chunk_index_buf).await? {
         return Ok(None);
@@ -198,13 +208,14 @@ async fn read_chunk_index(
     Ok(Some(u64::from_be_bytes(chunk_index_buf)))
 }
 
-async fn read_exact_or_eof(
-    recv: &mut iroh::endpoint::RecvStream,
-    buf: &mut [u8],
-) -> Result<bool> {
+async fn read_exact_or_eof(recv: &mut iroh::endpoint::RecvStream, buf: &mut [u8]) -> Result<bool> {
     let mut offset = 0;
     while offset < buf.len() {
-        match recv.read(&mut buf[offset..]).await.context("read browser peer stream bytes")? {
+        match recv
+            .read(&mut buf[offset..])
+            .await
+            .context("read browser peer stream bytes")?
+        {
             Some(read) => offset += read,
             None if offset == 0 => return Ok(false),
             None => bail!("browser peer stream ended mid-frame"),
@@ -225,7 +236,10 @@ fn assemble_file_bytes(
     chunks: BTreeMap<u64, Vec<u8>>,
 ) -> Result<Vec<u8>> {
     let total_chunks = chunk_count(descriptor);
-    ensure!(chunks.len() as u64 == total_chunks, "native peer did not receive all file chunks");
+    ensure!(
+        chunks.len() as u64 == total_chunks,
+        "native peer did not receive all file chunks"
+    );
     let mut bytes = Vec::with_capacity(descriptor.size_bytes as usize);
     for index in 0..total_chunks {
         let chunk = chunks
@@ -233,7 +247,10 @@ fn assemble_file_bytes(
             .ok_or_else(|| anyhow::anyhow!("missing file chunk {index}"))?;
         bytes.extend_from_slice(chunk);
     }
-    ensure!(bytes.len() as u64 == descriptor.size_bytes, "native peer file size mismatch");
+    ensure!(
+        bytes.len() as u64 == descriptor.size_bytes,
+        "native peer file size mismatch"
+    );
     Ok(bytes)
 }
 

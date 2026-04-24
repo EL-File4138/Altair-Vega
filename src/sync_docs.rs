@@ -6,17 +6,17 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_blobs::{
-    ALPN as BLOBS_ALPN,
-    BlobFormat,
-    BlobsProtocol,
-    HashAndFormat,
+    ALPN as BLOBS_ALPN, BlobFormat, BlobsProtocol, HashAndFormat,
     api::Store as BlobsStore,
     api::blobs::{AddPathOptions, ImportMode},
     store::fs::FsStore,
 };
 use iroh_docs::{
     ALPN as DOCS_ALPN, DocTicket,
-    api::{Doc, protocol::{AddrInfoOptions, ShareMode}},
+    api::{
+        Doc,
+        protocol::{AddrInfoOptions, ShareMode},
+    },
     protocol::Docs,
     store::Query,
 };
@@ -61,7 +61,11 @@ impl DocsSyncNode {
             .context("load docs blobs store")?;
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let docs = Docs::persistent(state_dir.join("docs-state"))
-            .spawn(endpoint.clone(), BlobsStore::from(blobs.clone()), gossip.clone())
+            .spawn(
+                endpoint.clone(),
+                BlobsStore::from(blobs.clone()),
+                gossip.clone(),
+            )
             .await
             .context("spawn docs protocol")?;
         let router = Router::builder(endpoint)
@@ -83,7 +87,8 @@ impl DocsSyncNode {
     ) -> Result<DocsExportResult> {
         let manifest = scan_directory(root, chunk_size_bytes)
             .with_context(|| format!("scan export root {}", root.display()))?;
-        self.export_manifest(root, &SyncManifest::default(), manifest).await
+        self.export_manifest(root, &SyncManifest::default(), manifest)
+            .await
     }
 
     pub async fn export_manifest(
@@ -135,7 +140,11 @@ impl DocsSyncNode {
             .first()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("doc ticket did not include any peers"))?;
-        let doc = self.docs.import(ticket).await.context("import doc ticket")?;
+        let doc = self
+            .docs
+            .import(ticket)
+            .await
+            .context("import doc ticket")?;
         Ok(DocsImportState { doc, peer })
     }
 
@@ -161,16 +170,16 @@ impl DocsSyncNode {
         let DocsImportState { doc, peer } = self.import_doc(ticket).await?;
         tokio::time::sleep(Duration::from_millis(wait_ms)).await;
         let manifest = read_manifest(&self.blobs, &doc).await?;
-        let entry = manifest
-            .get(relative_path)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("path {relative_path} not found in imported manifest"))?;
+        let entry = manifest.get(relative_path).cloned().ok_or_else(|| {
+            anyhow::anyhow!("path {relative_path} not found in imported manifest")
+        })?;
         let descriptor = match entry.state {
             SyncEntryState::File(descriptor) => descriptor,
             SyncEntryState::Tombstone => bail!("path {relative_path} is a tombstone"),
         };
         let target = output_root.join(relative_path);
-        self.fetch_descriptor_to_path(peer, &descriptor, &target).await?;
+        self.fetch_descriptor_to_path(peer, &descriptor, &target)
+            .await?;
         Ok(manifest)
     }
 
@@ -184,14 +193,19 @@ impl DocsSyncNode {
         let DocsImportState { doc, peer } = self.import_doc(ticket).await?;
         tokio::time::sleep(Duration::from_millis(wait_ms)).await;
 
-        let base_manifest = scan_directory(base_root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-            .with_context(|| format!("scan base sync root {}", base_root.display()))?;
+        let base_manifest =
+            scan_directory(base_root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+                .with_context(|| format!("scan base sync root {}", base_root.display()))?;
         let remote_manifest = read_manifest(&self.blobs, &doc).await?;
-        self.apply_remote_manifest(peer, &base_manifest, local_root, &remote_manifest).await
+        self.apply_remote_manifest(peer, &base_manifest, local_root, &remote_manifest)
+            .await
     }
 
     pub async fn shutdown(self) -> Result<()> {
-        self.router.shutdown().await.context("shutdown docs router")?;
+        self.router
+            .shutdown()
+            .await
+            .context("shutdown docs router")?;
         Ok(())
     }
 
@@ -267,8 +281,9 @@ impl DocsSyncNode {
                 SyncAction::DeletePath { path } => {
                     let target = local_root.join(path);
                     if target.exists() {
-                        fs::remove_file(&target)
-                            .with_context(|| format!("remove synced local file {}", target.display()))?;
+                        fs::remove_file(&target).with_context(|| {
+                            format!("remove synced local file {}", target.display())
+                        })?;
                         prune_empty_parent_dirs(local_root, &target)?;
                     }
                 }
@@ -280,8 +295,12 @@ impl DocsSyncNode {
                     let SyncEntryState::File(descriptor) = &entry.state else {
                         continue;
                     };
-                    self.fetch_descriptor_to_path(peer.clone(), descriptor, &local_root.join(conflict_path))
-                        .await?;
+                    self.fetch_descriptor_to_path(
+                        peer.clone(),
+                        descriptor,
+                        &local_root.join(conflict_path),
+                    )
+                    .await?;
                 }
             }
         }
@@ -299,8 +318,12 @@ impl DocsSyncNode {
         for entry in remote_manifest.entries.values() {
             match &entry.state {
                 SyncEntryState::File(descriptor) => {
-                    self.fetch_descriptor_to_path(peer.clone(), descriptor, &local_root.join(&entry.path))
-                        .await?;
+                    self.fetch_descriptor_to_path(
+                        peer.clone(),
+                        descriptor,
+                        &local_root.join(&entry.path),
+                    )
+                    .await?;
                     applied += 1;
                 }
                 SyncEntryState::Tombstone => {}
@@ -310,7 +333,11 @@ impl DocsSyncNode {
     }
 }
 
-pub async fn write_manifest(doc: &Doc, author: iroh_docs::AuthorId, manifest: &SyncManifest) -> Result<()> {
+pub async fn write_manifest(
+    doc: &Doc,
+    author: iroh_docs::AuthorId,
+    manifest: &SyncManifest,
+) -> Result<()> {
     for entry in manifest.entries.values() {
         let key = manifest_key(&entry.path);
         let value = serde_json::to_vec(entry).context("serialize sync manifest entry")?;
@@ -326,7 +353,10 @@ pub async fn read_manifest(blobs: &BlobsStore, doc: &Doc) -> Result<SyncManifest
         .key_prefix(MANIFEST_PREFIX)
         .include_empty()
         .build();
-    let stream = doc.get_many(query).await.context("query docs manifest entries")?;
+    let stream = doc
+        .get_many(query)
+        .await
+        .context("query docs manifest entries")?;
     tokio::pin!(stream);
     let mut entries = Vec::new();
     while let Some(item) = stream.next().await {
@@ -342,8 +372,8 @@ pub async fn read_manifest(blobs: &BlobsStore, doc: &Doc) -> Result<SyncManifest
             .get_bytes(entry.content_hash())
             .await
             .context("load docs metadata blob")?;
-        let sync_entry: SyncEntry = serde_json::from_slice(&bytes)
-            .context("deserialize docs sync manifest entry")?;
+        let sync_entry: SyncEntry =
+            serde_json::from_slice(&bytes).context("deserialize docs sync manifest entry")?;
         entries.push(sync_entry);
     }
     Ok(SyncManifest::new(entries))
@@ -371,7 +401,11 @@ pub fn summarize_manifest(manifest: &SyncManifest) -> Vec<String> {
         .collect()
 }
 
-async fn preload_manifest_blobs(blobs: &BlobsStore, root: &Path, manifest: &SyncManifest) -> Result<usize> {
+async fn preload_manifest_blobs(
+    blobs: &BlobsStore,
+    root: &Path,
+    manifest: &SyncManifest,
+) -> Result<usize> {
     let mut count = 0usize;
     for entry in manifest.entries.values() {
         let SyncEntryState::File(descriptor) = &entry.state else {
@@ -391,7 +425,10 @@ async fn preload_manifest_blobs(blobs: &BlobsStore, root: &Path, manifest: &Sync
             .await
             .with_context(|| format!("add sync content blob {display_path}"))?;
         if tag.hash != descriptor.hash.into() {
-            bail!("blob hash for {} does not match sync descriptor", entry.path);
+            bail!(
+                "blob hash for {} does not match sync descriptor",
+                entry.path
+            );
         }
         count += 1;
     }
@@ -521,9 +558,15 @@ mod tests {
             .publish_manifest(&doc, &remote_root, &export.manifest, &remote_manifest)
             .await?;
 
-        let synced_remote = wait_for_specific_manifest(&client, &imported.doc, &published_manifest).await?;
+        let synced_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &published_manifest).await?;
         let plan = client
-            .apply_remote_manifest(imported.peer.clone(), &initial_remote, &local_root, &synced_remote)
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &initial_remote,
+                &local_root,
+                &synced_remote,
+            )
             .await?;
 
         assert_eq!(plan.actions.len(), 1);
@@ -533,8 +576,14 @@ mod tests {
             SyncAction::CreateConflictCopy { conflict_path, .. } => conflict_path,
             other => panic!("expected conflict copy action, got {other:?}"),
         };
-        assert_eq!(std::fs::read(local_root.join("readme.txt"))?, b"local change\n");
-        assert_eq!(std::fs::read(local_root.join(conflict_path))?, b"remote change\n");
+        assert_eq!(
+            std::fs::read(local_root.join("readme.txt"))?,
+            b"local change\n"
+        );
+        assert_eq!(
+            std::fs::read(local_root.join(conflict_path))?,
+            b"remote change\n"
+        );
 
         client.shutdown().await?;
         server.shutdown().await?;
@@ -565,7 +614,7 @@ mod tests {
         for _ in 0..20 {
             match client.read_doc_manifest(doc).await {
                 Ok(manifest) if altair_vega::manifests_state_eq(&manifest, expected) => {
-                    return Ok(manifest)
+                    return Ok(manifest);
                 }
                 Ok(_) | Err(_) => {
                     sleep(Duration::from_millis(250)).await;

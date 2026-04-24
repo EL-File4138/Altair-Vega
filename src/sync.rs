@@ -32,8 +32,13 @@ pub struct SyncManifest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncAction {
-    UpsertFile { path: String, entry: SyncEntry },
-    DeletePath { path: String },
+    UpsertFile {
+        path: String,
+        entry: SyncEntry,
+    },
+    DeletePath {
+        path: String,
+    },
     CreateConflictCopy {
         original_path: String,
         conflict_path: String,
@@ -109,11 +114,7 @@ pub fn apply_merge_plan(local_root: &Path, remote_root: &Path, plan: &SyncMergeP
                 let SyncEntryState::File(descriptor) = &entry.state else {
                     continue;
                 };
-                copy_verified_file(
-                    &remote_root.join(path),
-                    &local_root.join(path),
-                    descriptor,
-                )?;
+                copy_verified_file(&remote_root.join(path), &local_root.join(path), descriptor)?;
             }
             SyncAction::DeletePath { path } => {
                 let target = local_root.join(path);
@@ -172,7 +173,11 @@ pub fn diff_manifests(previous: &SyncManifest, current: &SyncManifest) -> Vec<Sy
 }
 
 impl SyncEntry {
-    pub fn file(path: impl Into<String>, descriptor: FileDescriptor, modified_unix_ms: u64) -> Self {
+    pub fn file(
+        path: impl Into<String>,
+        descriptor: FileDescriptor,
+        modified_unix_ms: u64,
+    ) -> Self {
         Self {
             path: path.into(),
             modified_unix_ms,
@@ -355,8 +360,8 @@ fn collect_entries(
     paths.sort();
 
     for path in paths {
-        let metadata = fs::metadata(&path)
-            .with_context(|| format!("stat sync path {}", path.display()))?;
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("stat sync path {}", path.display()))?;
         if should_ignore_sync_path(&path, metadata.is_dir()) {
             continue;
         }
@@ -380,9 +385,13 @@ fn collect_entries(
     Ok(())
 }
 
-fn build_file_descriptor(path: &Path, relative_path: &str, chunk_size_bytes: u32) -> Result<FileDescriptor> {
-    let mut file = fs::File::open(path)
-        .with_context(|| format!("open sync file {}", path.display()))?;
+fn build_file_descriptor(
+    path: &Path,
+    relative_path: &str,
+    chunk_size_bytes: u32,
+) -> Result<FileDescriptor> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("open sync file {}", path.display()))?;
     let mut hasher = blake3::Hasher::new();
     let mut size_bytes = 0u64;
     let mut buf = vec![0u8; 64 * 1024];
@@ -682,7 +691,10 @@ mod tests {
         };
 
         apply_merge_plan(local.path(), remote.path(), &plan).unwrap();
-        assert_eq!(fs::read(local.path().join("docs.txt")).unwrap(), b"remote docs");
+        assert_eq!(
+            fs::read(local.path().join("docs.txt")).unwrap(),
+            b"remote docs"
+        );
         assert!(!local.path().join("stale.txt").exists());
     }
 
@@ -754,13 +766,21 @@ mod tests {
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&nested).unwrap();
         fs::write(temp.path().join("keep.txt"), b"keep").unwrap();
-        fs::write(temp.path().join("readme.altair-conflict-deadbeef.txt"), b"conflict").unwrap();
+        fs::write(
+            temp.path().join("readme.altair-conflict-deadbeef.txt"),
+            b"conflict",
+        )
+        .unwrap();
         fs::write(state_dir.join("meta.json"), b"{}").unwrap();
 
         let manifest = scan_directory(temp.path(), DEFAULT_SYNC_CHUNK_SIZE_BYTES).unwrap();
         assert_eq!(manifest.len(), 1);
         assert!(manifest.get("keep.txt").is_some());
-        assert!(manifest.get("readme.altair-conflict-deadbeef.txt").is_none());
+        assert!(
+            manifest
+                .get("readme.altair-conflict-deadbeef.txt")
+                .is_none()
+        );
     }
 
     #[test]

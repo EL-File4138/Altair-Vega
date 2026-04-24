@@ -10,6 +10,8 @@ pub mod pairing;
 pub mod probe;
 pub mod rendezvous;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod sync;
 
 pub use bootstrap::{CURRENT_PROTOCOL_VERSION, IrohBootstrapBundle, PeerCapabilities};
@@ -34,6 +36,11 @@ pub use probe::{PairingProbeOutcome, run_local_pairing_probe};
 pub use rendezvous::{
     ClientMessage as RendezvousClientMessage, JoinRequest as RendezvousJoinRequest,
     RendezvousErrorCode, ServerMessage as RendezvousServerMessage,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::{
+    DisposableRuntime, KEEP_RUNTIME_ENV, RUNTIME_ROOT_ENV, keep_runtime_requested,
+    preferred_runtime_parent, resolve_runtime_state_dir, runtime_root_from_env,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use sync::{

@@ -1,8 +1,9 @@
 use altair_vega::{
-    FileProbeConfig, FileProbeMode, MessagingPeerKind, ShortCode, apply_merge_plan,
-    diff_manifests, manifests_state_eq, merge_manifests, run_local_file_probe,
-    run_local_file_probe_with_config, run_local_message_probe, run_local_native_resume_probe,
-    run_local_pairing_probe, scan_directory,
+    FileProbeConfig, FileProbeMode, MessagingPeerKind, ShortCode, apply_merge_plan, diff_manifests,
+    keep_runtime_requested, manifests_state_eq, merge_manifests, preferred_runtime_parent,
+    resolve_runtime_state_dir, run_local_file_probe, run_local_file_probe_with_config,
+    run_local_message_probe, run_local_native_resume_probe, run_local_pairing_probe,
+    runtime_root_from_env, scan_directory,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -42,6 +43,10 @@ enum Command {
     BrowserPeer {
         #[command(subcommand)]
         command: BrowserPeerCommand,
+    },
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
     },
     Sync {
         #[command(subcommand)]
@@ -121,6 +126,14 @@ enum BrowserPeerCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum RuntimeCommand {
+    Inspect {
+        #[arg(long, default_value = ".altair-runtime-state")]
+        state_name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum SyncCommand {
     Snapshot {
         root: PathBuf,
@@ -137,28 +150,28 @@ enum SyncCommand {
     },
     DocsExport {
         root: PathBuf,
-        #[arg(long, default_value = ".altair-sync-docs")]
-        state_dir: PathBuf,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
     },
     DocsServe {
         root: PathBuf,
-        #[arg(long, default_value = ".altair-sync-docs-serve")]
-        state_dir: PathBuf,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
         #[arg(long, default_value_t = 1000)]
         interval_ms: u64,
     },
     DocsImport {
         ticket: String,
-        #[arg(long, default_value = ".altair-sync-docs-import")]
-        state_dir: PathBuf,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
         #[arg(long, default_value_t = 1500)]
         wait_ms: u64,
     },
     DocsFetch {
         ticket: String,
         path: String,
-        #[arg(long, default_value = ".altair-sync-docs-fetch")]
-        state_dir: PathBuf,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
         #[arg(long, default_value = "sync-fetch-output")]
         output_dir: PathBuf,
         #[arg(long, default_value_t = 1500)]
@@ -168,16 +181,16 @@ enum SyncCommand {
         ticket: String,
         base: PathBuf,
         local: PathBuf,
-        #[arg(long, default_value = ".altair-sync-docs-apply")]
-        state_dir: PathBuf,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
         #[arg(long, default_value_t = 1500)]
         wait_ms: u64,
     },
     DocsFollow {
         ticket: String,
         local: PathBuf,
-        #[arg(long, default_value = ".altair-sync-docs-follow")]
-        state_dir: PathBuf,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
         #[arg(long, default_value_t = 1500)]
         wait_ms: u64,
         #[arg(long, default_value_t = 1000)]
@@ -186,8 +199,8 @@ enum SyncCommand {
     DocsJoin {
         ticket: String,
         local: PathBuf,
-        #[arg(long, default_value = ".altair-sync-docs-join")]
-        state_dir: PathBuf,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
         #[arg(long, default_value_t = 1500)]
         wait_ms: u64,
         #[arg(long, default_value_t = 1000)]
@@ -376,6 +389,26 @@ async fn main() -> Result<()> {
                 browser_peer::run_browser_peer(code.normalized(), room_url, output_dir).await?;
             }
         },
+        Command::Runtime { command } => match command {
+            RuntimeCommand::Inspect { state_name } => {
+                let current_exe = std::env::current_exe().context("resolve current executable")?;
+                println!("current exe: {}", current_exe.display());
+                println!("temp dir: {}", std::env::temp_dir().display());
+                println!(
+                    "preferred runtime parent: {}",
+                    preferred_runtime_parent().display()
+                );
+                match runtime_root_from_env() {
+                    Some(root) => println!("runtime root: {}", root.display()),
+                    None => println!("runtime root: <none>"),
+                }
+                println!(
+                    "resolved state dir: {}",
+                    resolve_runtime_state_dir(None, &state_name).display()
+                );
+                println!("keep runtime requested: {}", keep_runtime_requested());
+            }
+        },
         Command::Sync { command } => match command {
             SyncCommand::Snapshot { root } => {
                 let manifest = scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
@@ -403,12 +436,15 @@ async fn main() -> Result<()> {
                 local,
                 remote,
             } => {
-                let base_manifest = scan_directory(&base, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                    .with_context(|| format!("scan base sync root {}", base.display()))?;
-                let local_manifest = scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                    .with_context(|| format!("scan local sync root {}", local.display()))?;
-                let remote_manifest = scan_directory(&remote, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                    .with_context(|| format!("scan remote sync root {}", remote.display()))?;
+                let base_manifest =
+                    scan_directory(&base, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+                        .with_context(|| format!("scan base sync root {}", base.display()))?;
+                let local_manifest =
+                    scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+                        .with_context(|| format!("scan local sync root {}", local.display()))?;
+                let remote_manifest =
+                    scan_directory(&remote, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+                        .with_context(|| format!("scan remote sync root {}", remote.display()))?;
                 let plan = merge_manifests(&base_manifest, &local_manifest, &remote_manifest);
                 println!("base: {}", base.display());
                 println!("local: {}", local.display());
@@ -419,8 +455,9 @@ async fn main() -> Result<()> {
                     .with_context(|| format!("apply merge plan into {}", local.display()))?;
             }
             SyncCommand::Watch { root, interval_ms } => {
-                let mut previous = scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                    .with_context(|| format!("scan sync watch root {}", root.display()))?;
+                let mut previous =
+                    scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+                        .with_context(|| format!("scan sync watch root {}", root.display()))?;
                 println!("watching: {}", root.display());
                 println!("interval ms: {interval_ms}");
                 println!("press Ctrl+C to stop");
@@ -432,7 +469,8 @@ async fn main() -> Result<()> {
                 watcher
                     .watch(&root, RecursiveMode::Recursive)
                     .with_context(|| format!("watch sync root {}", root.display()))?;
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_millis(interval_ms));
                 loop {
                     tokio::select! {
                         _ = tokio::signal::ctrl_c() => break,
@@ -470,6 +508,7 @@ async fn main() -> Result<()> {
                 }
             }
             SyncCommand::DocsExport { root, state_dir } => {
+                let state_dir = resolve_runtime_state_dir(state_dir, ".altair-sync-docs");
                 let node = sync_docs::DocsSyncNode::spawn_persistent(&state_dir).await?;
                 let result = node
                     .export_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
@@ -492,16 +531,24 @@ async fn main() -> Result<()> {
                 state_dir,
                 interval_ms,
             } => {
+                let state_dir = resolve_runtime_state_dir(state_dir, ".altair-sync-docs-serve");
                 let node = sync_docs::DocsSyncNode::spawn_persistent(&state_dir).await?;
-                let current_manifest = scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                    .with_context(|| format!("scan sync serve root {}", root.display()))?;
+                let current_manifest =
+                    scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+                        .with_context(|| format!("scan sync serve root {}", root.display()))?;
                 let manifest_state_path = state_dir.join("last-published-manifest.json");
                 let previous_manifest = if manifest_state_path.exists() {
                     serde_json::from_slice::<altair_vega::SyncManifest>(
-                        &std::fs::read(&manifest_state_path)
-                            .with_context(|| format!("read manifest state {}", manifest_state_path.display()))?,
+                        &std::fs::read(&manifest_state_path).with_context(|| {
+                            format!("read manifest state {}", manifest_state_path.display())
+                        })?,
                     )
-                    .with_context(|| format!("deserialize manifest state {}", manifest_state_path.display()))?
+                    .with_context(|| {
+                        format!(
+                            "deserialize manifest state {}",
+                            manifest_state_path.display()
+                        )
+                    })?
                 } else {
                     current_manifest.clone()
                 };
@@ -528,7 +575,8 @@ async fn main() -> Result<()> {
                 watcher
                     .watch(&root, RecursiveMode::Recursive)
                     .with_context(|| format!("watch docs serve root {}", root.display()))?;
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_millis(interval_ms));
                 loop {
                     tokio::select! {
                         _ = tokio::signal::ctrl_c() => break,
@@ -588,6 +636,7 @@ async fn main() -> Result<()> {
                 state_dir,
                 wait_ms,
             } => {
+                let state_dir = resolve_runtime_state_dir(state_dir, ".altair-sync-docs-import");
                 let node = sync_docs::DocsSyncNode::spawn_persistent(&state_dir).await?;
                 let manifest = node.import_manifest(&ticket, wait_ms).await?;
                 println!("state dir: {}", state_dir.display());
@@ -604,6 +653,7 @@ async fn main() -> Result<()> {
                 output_dir,
                 wait_ms,
             } => {
+                let state_dir = resolve_runtime_state_dir(state_dir, ".altair-sync-docs-fetch");
                 let node = sync_docs::DocsSyncNode::spawn_persistent(&state_dir).await?;
                 let manifest = node
                     .fetch_path_from_ticket(&ticket, &path, &output_dir, wait_ms)
@@ -621,6 +671,7 @@ async fn main() -> Result<()> {
                 state_dir,
                 wait_ms,
             } => {
+                let state_dir = resolve_runtime_state_dir(state_dir, ".altair-sync-docs-apply");
                 let node = sync_docs::DocsSyncNode::spawn_persistent(&state_dir).await?;
                 let plan = node
                     .apply_ticket_merge(&ticket, &base, &local, wait_ms)
@@ -639,6 +690,7 @@ async fn main() -> Result<()> {
                 wait_ms,
                 interval_ms,
             } => {
+                let state_dir = resolve_runtime_state_dir(state_dir, ".altair-sync-docs-follow");
                 std::fs::create_dir_all(&local)
                     .with_context(|| format!("create follow local root {}", local.display()))?;
                 let node = sync_docs::DocsSyncNode::spawn_persistent(&state_dir).await?;
@@ -646,18 +698,24 @@ async fn main() -> Result<()> {
                 let had_sync_state = sync_state_path.exists();
                 let mut base_manifest = if had_sync_state {
                     serde_json::from_slice::<altair_vega::SyncManifest>(
-                        &std::fs::read(&sync_state_path)
-                            .with_context(|| format!("read follow state {}", sync_state_path.display()))?,
+                        &std::fs::read(&sync_state_path).with_context(|| {
+                            format!("read follow state {}", sync_state_path.display())
+                        })?,
                     )
-                    .with_context(|| format!("deserialize follow state {}", sync_state_path.display()))?
+                    .with_context(|| {
+                        format!("deserialize follow state {}", sync_state_path.display())
+                    })?
                 } else {
                     scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
                         .with_context(|| format!("scan follow local root {}", local.display()))?
                 };
                 let imported = node.import_doc(&ticket).await?;
                 tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
-                let initial_local = scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                    .with_context(|| format!("scan initial follow local root {}", local.display()))?;
+                let initial_local =
+                    scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+                        .with_context(|| {
+                            format!("scan initial follow local root {}", local.display())
+                        })?;
                 let remote_manifest = wait_for_remote_manifest(
                     &node,
                     &imported.doc,
@@ -677,7 +735,8 @@ async fn main() -> Result<()> {
                 println!("state dir: {}", state_dir.display());
                 println!("interval ms: {interval_ms}");
                 println!("press Ctrl+C to stop");
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_millis(interval_ms));
                 let mut remote_events = Box::pin(imported.doc.subscribe().await?);
                 loop {
                     tokio::select! {
@@ -736,6 +795,7 @@ async fn main() -> Result<()> {
                 wait_ms,
                 interval_ms,
             } => {
+                let state_dir = resolve_runtime_state_dir(state_dir, ".altair-sync-docs-join");
                 std::fs::create_dir_all(&local)
                     .with_context(|| format!("create join local root {}", local.display()))?;
                 let node = sync_docs::DocsSyncNode::spawn_persistent(&state_dir).await?;
@@ -743,17 +803,23 @@ async fn main() -> Result<()> {
                 let had_sync_state = sync_state_path.exists();
                 let mut base_manifest = if had_sync_state {
                     serde_json::from_slice::<altair_vega::SyncManifest>(
-                        &std::fs::read(&sync_state_path)
-                            .with_context(|| format!("read join state {}", sync_state_path.display()))?,
+                        &std::fs::read(&sync_state_path).with_context(|| {
+                            format!("read join state {}", sync_state_path.display())
+                        })?,
                     )
-                    .with_context(|| format!("deserialize join state {}", sync_state_path.display()))?
+                    .with_context(|| {
+                        format!("deserialize join state {}", sync_state_path.display())
+                    })?
                 } else {
                     altair_vega::SyncManifest::default()
                 };
                 let imported = node.import_doc(&ticket).await?;
                 tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
-                let initial_local = scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                    .with_context(|| format!("scan initial join local root {}", local.display()))?;
+                let initial_local =
+                    scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+                        .with_context(|| {
+                            format!("scan initial join local root {}", local.display())
+                        })?;
                 let initial_remote = wait_for_remote_manifest(
                     &node,
                     &imported.doc,
@@ -768,14 +834,22 @@ async fn main() -> Result<()> {
                     println!("initial seeded files: {}", applied);
                     altair_vega::SyncMergePlan::default()
                 } else {
-                    node
-                        .apply_remote_manifest(imported.peer.clone(), &base_manifest, &local, &initial_remote)
-                        .await?
+                    node.apply_remote_manifest(
+                        imported.peer.clone(),
+                        &base_manifest,
+                        &local,
+                        &initial_remote,
+                    )
+                    .await?
                 };
                 println!("joined docs ticket into {}", local.display());
                 println!("state dir: {}", state_dir.display());
                 println!("interval ms: {interval_ms}");
-                println!("initial actions: {} conflicts: {}", initial_plan.actions.len(), initial_plan.conflicts.len());
+                println!(
+                    "initial actions: {} conflicts: {}",
+                    initial_plan.actions.len(),
+                    initial_plan.conflicts.len()
+                );
                 persist_manifest_state(&sync_state_path, &initial_remote)?;
                 base_manifest = initial_remote;
                 let mut last_published_manifest: Option<altair_vega::SyncManifest> = None;
@@ -789,7 +863,8 @@ async fn main() -> Result<()> {
                 watcher
                     .watch(&local, RecursiveMode::Recursive)
                     .with_context(|| format!("watch docs join local root {}", local.display()))?;
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_millis(interval_ms));
                 let mut remote_events = Box::pin(imported.doc.subscribe().await?);
 
                 loop {
@@ -935,7 +1010,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn persist_manifest_state(path: &std::path::Path, manifest: &altair_vega::SyncManifest) -> Result<()> {
+fn persist_manifest_state(
+    path: &std::path::Path,
+    manifest: &altair_vega::SyncManifest,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create manifest state parent {}", parent.display()))?;

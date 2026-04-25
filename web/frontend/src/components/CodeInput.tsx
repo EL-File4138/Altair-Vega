@@ -67,7 +67,6 @@ function getNormalizedCode(segments: string[]) {
 export default function CodeInput(props: CodeInputProps) {
   const [segments, setSegments] = createSignal([...EMPTY_SEGMENTS])
   const [focusedIndex, setFocusedIndex] = createSignal<SegmentIndex | null>(null)
-  const [lastSubmitted, setLastSubmitted] = createSignal('')
   const inputRefs: Array<HTMLInputElement | undefined> = []
 
   let syncingFromProps = false
@@ -75,7 +74,6 @@ export default function CodeInput(props: CodeInputProps) {
   const syncFromCode = (code: string) => {
     syncingFromProps = true
     setSegments(parseSegments(code))
-    setLastSubmitted('')
     queueMicrotask(() => {
       syncingFromProps = false
     })
@@ -108,9 +106,7 @@ export default function CodeInput(props: CodeInputProps) {
 
     const nextSegments = normalized.split('-').slice(0, 4)
     setSegments(nextSegments)
-    setLastSubmitted(normalized)
     props.onCodeChange(normalized)
-    props.onSubmit(normalized)
     inputRefs[3]?.focus()
     inputRefs[3]?.select()
     return true
@@ -128,6 +124,12 @@ export default function CodeInput(props: CodeInputProps) {
     await navigator.clipboard.writeText(normalized)
   }
 
+  const handleConnect = () => {
+    const normalized = getNormalizedCode(segments())
+    if (!normalized) return
+    props.onSubmit(normalized)
+  }
+
   onMount(() => {
     syncFromCode(props.code)
   })
@@ -142,17 +144,6 @@ export default function CodeInput(props: CodeInputProps) {
 
     const partialCode = joinPartial(currentSegments)
     props.onCodeChange(partialCode)
-
-    const normalized = getNormalizedCode(currentSegments)
-    if (!normalized) {
-      if (lastSubmitted()) setLastSubmitted('')
-      return
-    }
-
-    if (normalized === lastSubmitted()) return
-
-    setLastSubmitted(normalized)
-    props.onSubmit(normalized)
   })
 
   return (
@@ -249,6 +240,14 @@ export default function CodeInput(props: CodeInputProps) {
       <div class="code-input-actions">
         <button type="button" class="btn btn-subtle" onClick={props.onGenerate}>
           New code
+        </button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          onClick={handleConnect}
+          disabled={!getNormalizedCode(segments())}
+        >
+          Connect
         </button>
         <button
           type="button"

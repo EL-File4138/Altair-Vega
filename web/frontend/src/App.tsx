@@ -47,7 +47,6 @@ export default function App() {
       const files = await listReceivedFiles()
       if (files.length > 0) setReceivedFiles(files)
       attachEventStream(node)
-      joinCode(state.code)
     } catch (err) {
       setConnectionState('error')
       addToast('error', `Failed to start: ${err instanceof Error ? err.message : String(err)}`)
@@ -184,7 +183,7 @@ export default function App() {
   }
 
   function handleCodeSubmit(code: string) { joinCode(code) }
-  function handleGenerateCode() { const code = generate_short_code(); setCode(code); joinCode(code) }
+  function handleGenerateCode() { setCode(generate_short_code()) }
 
   return (
     <div class="app-layout">

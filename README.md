@@ -70,7 +70,7 @@ Launcher behavior:
 
 ## Status
 
-This repository is in early bootstrap. The implementation is just starting and should not yet be considered usable.
+This repository is still pre-release. Milestone 7 remains in progress after native bidirectional sync, native LAN discovery, and native binary-size reduction passed; release-hardening work is pending and may move remaining functionality blockers back into Milestone 7 before Milestone 8 starts.
 
 ## License
 

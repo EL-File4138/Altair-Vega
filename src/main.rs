@@ -34,7 +34,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Error as WebSocketError, Message, protocol::CloseFrame},
+};
 use url::Url;
 
 mod browser_peer;
@@ -44,6 +47,9 @@ const DEFAULT_RENDEZVOUS_URL: &str = match option_env!("ALTAIR_VEGA_DEFAULT_REND
     Some(value) => value,
     None => "ws://127.0.0.1:5173/__altair_vega_rendezvous",
 };
+const RENDEZVOUS_CLOSE_INVALID_PAYLOAD: u16 = 1003;
+const RENDEZVOUS_CLOSE_MESSAGE_TOO_LARGE: u16 = 1009;
+const RENDEZVOUS_CLOSE_ROOM_EXPIRED: u16 = 4000;
 
 #[derive(Debug, Parser)]
 #[command(name = "altair-vega")]
@@ -560,6 +566,61 @@ enum RoomServerEvent {
 #[serde(rename_all = "camelCase")]
 struct RoomPeerInfo {
     endpoint_id: String,
+}
+
+fn rendezvous_close_message(frame: Option<CloseFrame>) -> String {
+    let Some(frame) = frame else {
+        return "rendezvous room closed without a status code".to_string();
+    };
+    let code = u16::from(frame.code);
+    let reason = frame.reason.trim();
+    match code {
+        RENDEZVOUS_CLOSE_INVALID_PAYLOAD => {
+            if reason.is_empty() {
+                "rendezvous room rejected an invalid message".to_string()
+            } else {
+                format!("rendezvous room rejected an invalid message: {reason}")
+            }
+        }
+        RENDEZVOUS_CLOSE_MESSAGE_TOO_LARGE => {
+            if reason.is_empty() {
+                "rendezvous room rejected a message that was too large".to_string()
+            } else {
+                format!("rendezvous room rejected a message that was too large: {reason}")
+            }
+        }
+        RENDEZVOUS_CLOSE_ROOM_EXPIRED => {
+            if reason.is_empty() {
+                "rendezvous room expired; start a new room with a fresh code".to_string()
+            } else {
+                format!("rendezvous room expired: {reason}; start a new room with a fresh code")
+            }
+        }
+        _ => {
+            if reason.is_empty() {
+                format!("rendezvous room closed with status {code}")
+            } else {
+                format!("rendezvous room closed with status {code}: {reason}")
+            }
+        }
+    }
+}
+
+fn rendezvous_connect_error_message(error: &WebSocketError) -> Option<String> {
+    let WebSocketError::Http(response) = error else {
+        return None;
+    };
+    match response.status().as_u16() {
+        400 => Some("rendezvous room rejected the request parameters".to_string()),
+        403 => Some(
+            "rendezvous room rejected this client origin; this service may be restricted to the trusted web app"
+                .to_string(),
+        ),
+        409 => Some("rendezvous room is full; try again with a fresh code".to_string()),
+        410 => Some("rendezvous room expired; start a new room with a fresh code".to_string()),
+        426 => Some("rendezvous endpoint expected a WebSocket upgrade".to_string()),
+        status => Some(format!("rendezvous room rejected the connection with HTTP {status}")),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -2936,11 +2997,15 @@ async fn establish_native_control_peer(
     let room = match connect_async(url.as_str()).await {
         Ok((ws, _)) => Some(ws.split()),
         Err(error) if local_role.is_some() || local_control_target_role(peer_type).is_some() => {
-            println!("rendezvous unavailable; continuing with local discovery only: {error}");
+            let message =
+                rendezvous_connect_error_message(&error).unwrap_or_else(|| error.to_string());
+            println!("rendezvous unavailable; continuing with local discovery only: {message}");
             None
         }
         Err(error) => {
-            return Err(error)
+            let message =
+                rendezvous_connect_error_message(&error).unwrap_or_else(|| error.to_string());
+            return Err(anyhow::anyhow!(message))
                 .with_context(|| format!("connect native peer to rendezvous room at {url}"));
         }
     };
@@ -2995,6 +3060,9 @@ async fn establish_native_control_peer(
                 let message = message
                     .ok_or_else(|| anyhow::anyhow!("rendezvous room closed before native pairing completed"))?
                     .context("read native rendezvous message")?;
+                if let Message::Close(frame) = message {
+                    anyhow::bail!(rendezvous_close_message(frame));
+                }
                 let Some(text) = message.to_text().ok() else {
                     continue;
                 };
@@ -3850,7 +3918,9 @@ async fn run_sync_host(
             (Some(write), Some(read))
         }
         Err(error) => {
-            println!("rendezvous unavailable; continuing with local discovery only: {error}");
+            let message =
+                rendezvous_connect_error_message(&error).unwrap_or_else(|| error.to_string());
+            println!("rendezvous unavailable; continuing with local discovery only: {message}");
             (None, None)
         }
     };
@@ -3906,6 +3976,12 @@ async fn run_sync_host(
                     continue;
                 };
                 let message = message.context("read sync rendezvous message")?;
+                if let Message::Close(frame) = message {
+                    println!("{}", rendezvous_close_message(frame));
+                    room_read = None;
+                    room_write = None;
+                    continue;
+                }
                 let Some(text) = message.to_text().ok() else {
                     continue;
                 };
@@ -4018,9 +4094,10 @@ async fn wait_for_sync_ticket(code: &ShortCode, room_url: &str) -> Result<String
         "native-sync-peer",
         "Native Sync Peer",
     )?;
-    let (ws, _) = connect_async(url.as_str())
-        .await
-        .with_context(|| {
+    let (ws, _) = connect_async(url.as_str()).await.map_err(|error| {
+        let message = rendezvous_connect_error_message(&error).unwrap_or_else(|| error.to_string());
+        anyhow::anyhow!(message)
+    }).with_context(|| {
             format!(
                 "connect sync peer to rendezvous room at {url}; is the rendezvous server running? Use --naked with a docs ticket to sync without rendezvous"
             )
@@ -4030,6 +4107,9 @@ async fn wait_for_sync_ticket(code: &ShortCode, room_url: &str) -> Result<String
 
     while let Some(message) = read.next().await {
         let message = message.context("read sync rendezvous message")?;
+        if let Message::Close(frame) = message {
+            anyhow::bail!(rendezvous_close_message(frame));
+        }
         let Some(text) = message.to_text().ok() else {
             continue;
         };

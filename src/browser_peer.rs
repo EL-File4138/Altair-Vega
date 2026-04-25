@@ -13,13 +13,19 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{fs, io::AsyncWriteExt};
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Error as WebSocketError, Message, protocol::CloseFrame},
+};
 use url::Url;
 
 pub const BROWSER_MESSAGE_ALPN: &[u8] = b"altair-vega/browser-message/1";
 pub const BROWSER_FILE_ALPN: &[u8] = b"altair-vega/browser-file/1";
 const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 const FILE_CHUNK_HEADER_BYTES: usize = 8 + 4 + 32;
+const RENDEZVOUS_CLOSE_INVALID_PAYLOAD: u16 = 1003;
+const RENDEZVOUS_CLOSE_MESSAGE_TOO_LARGE: u16 = 1009;
+const RENDEZVOUS_CLOSE_ROOM_EXPIRED: u16 = 4000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BrowserPacket {
@@ -75,6 +81,11 @@ pub async fn run_browser_peer(code: String, room_url: String, output_dir: PathBu
 
     let (ws, _) = connect_async(url.as_str())
         .await
+        .map_err(|error| {
+            let message =
+                rendezvous_connect_error_message(&error).unwrap_or_else(|| error.to_string());
+            anyhow::anyhow!(message)
+        })
         .with_context(|| format!("connect native peer to room service at {url}"))?;
 
     println!("browser peer online");
@@ -87,12 +98,16 @@ pub async fn run_browser_peer(code: String, room_url: String, output_dir: PathBu
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        _ = async {
+        result = async {
             while let Some(message) = read.next().await {
-                let _ = message?;
+                if let Message::Close(frame) = message? {
+                    bail!(rendezvous_close_message(frame));
+                }
             }
-            Ok::<(), tokio_tungstenite::tungstenite::Error>(())
-        } => {}
+            Ok::<(), anyhow::Error>(())
+        } => {
+            result.context("read browser-peer rendezvous message")?;
+        }
     }
 
     router
@@ -100,6 +115,61 @@ pub async fn run_browser_peer(code: String, room_url: String, output_dir: PathBu
         .await
         .context("shutdown browser peer router")?;
     Ok(())
+}
+
+fn rendezvous_close_message(frame: Option<CloseFrame>) -> String {
+    let Some(frame) = frame else {
+        return "rendezvous room closed without a status code".to_string();
+    };
+    let code = u16::from(frame.code);
+    let reason = frame.reason.trim();
+    match code {
+        RENDEZVOUS_CLOSE_INVALID_PAYLOAD => {
+            if reason.is_empty() {
+                "rendezvous room rejected an invalid message".to_string()
+            } else {
+                format!("rendezvous room rejected an invalid message: {reason}")
+            }
+        }
+        RENDEZVOUS_CLOSE_MESSAGE_TOO_LARGE => {
+            if reason.is_empty() {
+                "rendezvous room rejected a message that was too large".to_string()
+            } else {
+                format!("rendezvous room rejected a message that was too large: {reason}")
+            }
+        }
+        RENDEZVOUS_CLOSE_ROOM_EXPIRED => {
+            if reason.is_empty() {
+                "rendezvous room expired; start a new room with a fresh code".to_string()
+            } else {
+                format!("rendezvous room expired: {reason}; start a new room with a fresh code")
+            }
+        }
+        _ => {
+            if reason.is_empty() {
+                format!("rendezvous room closed with status {code}")
+            } else {
+                format!("rendezvous room closed with status {code}: {reason}")
+            }
+        }
+    }
+}
+
+fn rendezvous_connect_error_message(error: &WebSocketError) -> Option<String> {
+    let WebSocketError::Http(response) = error else {
+        return None;
+    };
+    match response.status().as_u16() {
+        400 => Some("rendezvous room rejected the request parameters".to_string()),
+        403 => Some(
+            "rendezvous room rejected this client origin; this service may be restricted to the trusted web app"
+                .to_string(),
+        ),
+        409 => Some("rendezvous room is full; try again with a fresh code".to_string()),
+        410 => Some("rendezvous room expired; start a new room with a fresh code".to_string()),
+        426 => Some("rendezvous endpoint expected a WebSocket upgrade".to_string()),
+        status => Some(format!("rendezvous room rejected the connection with HTTP {status}")),
+    }
 }
 
 impl ProtocolHandler for BrowserPeerMessageHandler {

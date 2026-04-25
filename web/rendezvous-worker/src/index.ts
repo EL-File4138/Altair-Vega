@@ -1,5 +1,8 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
+  RENDEZVOUS_CLOSE_INVALID_PAYLOAD,
+  RENDEZVOUS_CLOSE_MESSAGE_TOO_LARGE,
+  RENDEZVOUS_CLOSE_ROOM_EXPIRED,
   RENDEZVOUS_PATH,
   type RendezvousClientEvent,
   type RendezvousServerEvent,
@@ -8,6 +11,10 @@ import {
 
 export interface Env {
   ROOMS: DurableObjectNamespace<Room>
+  ALLOWED_ORIGINS?: string
+  ROOM_TTL_SECONDS?: string
+  MAX_ROOM_PEERS?: string
+  MAX_MESSAGE_BYTES?: string
 }
 
 type RoomSession = {
@@ -16,6 +23,20 @@ type RoomSession = {
   peerType?: string
   label?: string
 }
+
+type RoomLimits = {
+  maxRoomAgeMs: number
+  maxPeers: number
+  maxMessageBytes: number
+}
+
+const DEFAULT_ROOM_TTL_SECONDS = 30 * 60
+const DEFAULT_MAX_ROOM_PEERS = 8
+const DEFAULT_MAX_MESSAGE_BYTES = 256 * 1024
+const MAX_CODE_BYTES = 128
+const MAX_ENDPOINT_ID_BYTES = 128
+const MAX_PEER_TYPE_BYTES = 64
+const MAX_LABEL_BYTES = 96
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -31,6 +52,10 @@ export default {
       return new Response('Not found', { status: 404 })
     }
 
+    if (!isTrustedOrigin(request, env.ALLOWED_ORIGINS)) {
+      return new Response('Origin not allowed', { status: 403 })
+    }
+
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('Expected Upgrade: websocket', { status: 426 })
     }
@@ -40,29 +65,53 @@ export default {
     if (!code || !endpointId) {
       return new Response('Missing code or endpointId', { status: 400 })
     }
+    if (!isSafeToken(code, MAX_CODE_BYTES) || !isSafeToken(endpointId, MAX_ENDPOINT_ID_BYTES)) {
+      return new Response('Invalid code or endpointId', { status: 400 })
+    }
 
     const id = env.ROOMS.idFromName(code)
-    return env.ROOMS.get(id).fetch(request)
+    const nextUrl = new URL(request.url)
+    nextUrl.searchParams.set('roomTtlSeconds', env.ROOM_TTL_SECONDS ?? '')
+    nextUrl.searchParams.set('maxRoomPeers', env.MAX_ROOM_PEERS ?? '')
+    nextUrl.searchParams.set('maxMessageBytes', env.MAX_MESSAGE_BYTES ?? '')
+    return env.ROOMS.get(id).fetch(new Request(nextUrl, request))
   },
 }
 
 export class Room extends DurableObject {
   private readonly sessions = new Map<WebSocket, RoomSession>()
+  private createdAt = Date.now()
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     const endpointId = url.searchParams.get('endpointId')?.trim()
-    const peerType = url.searchParams.get('peerType')?.trim() || undefined
-    const label = url.searchParams.get('label')?.trim() || undefined
+    const peerType = boundedOptionalParam(url, 'peerType', MAX_PEER_TYPE_BYTES)
+    const label = boundedOptionalParam(url, 'label', MAX_LABEL_BYTES)
+    const limits = roomLimitsFromUrl(url)
     if (!endpointId) {
       return new Response('Missing endpointId', { status: 400 })
+    }
+    if (!isSafeToken(endpointId, MAX_ENDPOINT_ID_BYTES)) {
+      return new Response('Invalid endpointId', { status: 400 })
+    }
+    if (peerType === null || label === null) {
+      return new Response('Invalid peer metadata', { status: 400 })
+    }
+
+    this.cleanup(limits, Date.now())
+    if (this.isExpired(limits, Date.now())) {
+      this.closeAll(RENDEZVOUS_CLOSE_ROOM_EXPIRED, 'room expired')
+      return new Response('Room expired', { status: 410 })
+    }
+
+    this.evictDuplicate(endpointId)
+    if (this.sessions.size >= limits.maxPeers) {
+      return new Response('Room capacity reached', { status: 409 })
     }
 
     const pair = new WebSocketPair()
     const [client, server] = Object.values(pair)
     server.accept()
-
-    this.evictDuplicate(endpointId)
 
     const session: RoomSession = {
       endpointId,
@@ -90,10 +139,13 @@ export class Room extends DurableObject {
       label,
     })
 
-    server.addEventListener('message', (event) => {
-      this.onMessage(server, String(event.data))
+    server.addEventListener('message', (event: MessageEvent<string | ArrayBuffer>) => {
+      this.onMessage(server, event.data, limits)
     })
     server.addEventListener('close', () => {
+      this.onClose(server)
+    })
+    server.addEventListener('error', () => {
       this.onClose(server)
     })
 
@@ -113,14 +165,35 @@ export class Room extends DurableObject {
     }
   }
 
-  private onMessage(sourceSocket: WebSocket, raw: string) {
-    let message: RendezvousClientEvent | null = null
-    try {
-      message = JSON.parse(raw) as RendezvousClientEvent
-    } catch {
+  private onMessage(sourceSocket: WebSocket, data: string | ArrayBuffer, limits: RoomLimits) {
+    this.cleanup(limits, Date.now())
+    if (this.isExpired(limits, Date.now())) {
+      this.closeAll(RENDEZVOUS_CLOSE_ROOM_EXPIRED, 'room expired')
       return
     }
-    if (!message || message.type !== 'relay') {
+
+    if (typeof data !== 'string') {
+      sourceSocket.close(RENDEZVOUS_CLOSE_INVALID_PAYLOAD, 'expected text message')
+      this.onClose(sourceSocket)
+      return
+    }
+    if (utf8Bytes(data) > limits.maxMessageBytes) {
+      sourceSocket.close(RENDEZVOUS_CLOSE_MESSAGE_TOO_LARGE, 'message too large')
+      this.onClose(sourceSocket)
+      return
+    }
+
+    let message: RendezvousClientEvent | null = null
+    try {
+      message = JSON.parse(data) as RendezvousClientEvent
+    } catch {
+      sourceSocket.close(RENDEZVOUS_CLOSE_INVALID_PAYLOAD, 'invalid JSON')
+      this.onClose(sourceSocket)
+      return
+    }
+    if (!isValidRelayMessage(message, limits.maxMessageBytes)) {
+      sourceSocket.close(RENDEZVOUS_CLOSE_INVALID_PAYLOAD, 'invalid relay message')
+      this.onClose(sourceSocket)
       return
     }
 
@@ -152,7 +225,104 @@ export class Room extends DurableObject {
       type: 'peer-left',
       endpointId: session.endpointId,
     })
+    if (this.sessions.size === 0) {
+      this.createdAt = Date.now()
+    }
   }
+
+  private cleanup(limits: RoomLimits, now: number) {
+    for (const socket of this.sessions.keys()) {
+      if (socket.readyState === socket.CLOSED || socket.readyState === socket.CLOSING) {
+        this.onClose(socket)
+      }
+    }
+
+    if (this.sessions.size === 0) {
+      this.createdAt = now
+      return
+    }
+
+    if (this.isExpired(limits, now)) {
+      this.closeAll(RENDEZVOUS_CLOSE_ROOM_EXPIRED, 'room expired')
+    }
+  }
+
+  private isExpired(limits: RoomLimits, now: number) {
+    return now - this.createdAt > limits.maxRoomAgeMs
+  }
+
+  private closeAll(code: number, reason: string) {
+    for (const socket of this.sessions.keys()) {
+      socket.close(code, reason)
+    }
+    this.sessions.clear()
+    this.createdAt = Date.now()
+  }
+}
+
+function isTrustedOrigin(request: Request, allowedOriginsValue: string | undefined) {
+  const allowedOrigins = parseAllowedOrigins(allowedOriginsValue)
+  if (allowedOrigins.length === 0) {
+    return true
+  }
+
+  const origin = request.headers.get('Origin')?.trim()
+  if (!origin) {
+    return false
+  }
+  return allowedOrigins.includes(origin)
+}
+
+function parseAllowedOrigins(value: string | undefined) {
+  return (value ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+}
+
+function roomLimitsFromUrl(url: URL): RoomLimits {
+  return {
+    maxRoomAgeMs: positiveIntParam(url, 'roomTtlSeconds', DEFAULT_ROOM_TTL_SECONDS) * 1000,
+    maxPeers: positiveIntParam(url, 'maxRoomPeers', DEFAULT_MAX_ROOM_PEERS),
+    maxMessageBytes: positiveIntParam(url, 'maxMessageBytes', DEFAULT_MAX_MESSAGE_BYTES),
+  }
+}
+
+function positiveIntParam(url: URL, name: string, fallback: number) {
+  const value = Number.parseInt(url.searchParams.get(name) ?? '', 10)
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function boundedOptionalParam(url: URL, name: string, maxBytes: number): string | undefined | null {
+  const value = url.searchParams.get(name)?.trim()
+  if (!value) {
+    return undefined
+  }
+  return isSafeToken(value, maxBytes) ? value : null
+}
+
+function isSafeToken(value: string, maxBytes: number) {
+  return utf8Bytes(value) <= maxBytes && !/[\u0000-\u001f\u007f]/u.test(value)
+}
+
+function isValidRelayMessage(
+  message: RendezvousClientEvent | null,
+  maxMessageBytes: number,
+): message is RendezvousClientEvent {
+  if (!message || typeof message !== 'object') {
+    return false
+  }
+  if (message.type !== 'relay' || !isSafeToken(message.toEndpointId, MAX_ENDPOINT_ID_BYTES)) {
+    return false
+  }
+  if (!message.payload || typeof message.payload !== 'object') {
+    return false
+  }
+  return utf8Bytes(JSON.stringify(message.payload)) <= maxMessageBytes
+}
+
+function utf8Bytes(value: string) {
+  return new TextEncoder().encode(value).byteLength
 }
 
 function broadcast(

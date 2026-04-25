@@ -73,7 +73,7 @@ export default function App() {
     const conn = connectRoom(normalized, state.endpointId, {
       onOpen() { setConnectionState('connected'); addToast('success', `Joined room`) },
       onEvent(event: RendezvousEvent) { handleRendezvousEvent(event) },
-      onClose() { setConnectionState('fallback'); addToast('warning', 'Room service disconnected, using local fallback') },
+      onClose(_code, reason) { setConnectionState('fallback'); addToast('warning', reason ?? 'Room service disconnected, using local fallback') },
       onError() { addToast('warning', 'Room service connection failed') },
       onReconnecting(_code, attempt, delayMs) {
         setConnectionState('reconnecting')

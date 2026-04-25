@@ -1,4 +1,4 @@
-import { RENDEZVOUS_PATH } from '../../../rendezvous-protocol'
+import { describeRendezvousClose, RENDEZVOUS_PATH } from '../../../rendezvous-protocol'
 import type { ResumeRelayPayload, RendezvousEvent, RoomConnection, PresenceMessage } from './types'
 
 const DEFAULT_RENDEZVOUS_URL = import.meta.env.VITE_DEFAULT_RENDEZVOUS_URL?.trim() ?? ''
@@ -31,7 +31,7 @@ export function getRendezvousUrl(): URL {
 export type RoomCallbacks = {
   onOpen: (code: string) => void
   onEvent: (event: RendezvousEvent) => void
-  onClose: (code: string) => void
+  onClose: (code: string, reason?: string) => void
   onError: (code: string) => void
   onReconnecting: (code: string, attempt: number, delayMs: number) => void
   onFallbackPresence: (endpointId: string, announcedAt: number) => void
@@ -60,10 +60,17 @@ export function connectRoom(
     socket = nextSocket
     let disconnected = false
 
-    const handleDisconnect = () => {
+    const handleDisconnect = (event?: CloseEvent) => {
       if (closedIntentionally || disconnected) return
       disconnected = true
       if (socket === nextSocket) socket = null
+
+      const closeReason = event ? describeRendezvousClose(event.code, event.reason) : null
+      if (closeReason) {
+        callbacks.onClose(code, closeReason)
+        fallbackConnection = fallbackToBroadcastChannel(code, endpointId, callbacks)
+        return
+      }
 
       if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts += 1

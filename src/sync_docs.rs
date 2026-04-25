@@ -1,8 +1,9 @@
 use altair_vega::{
-    SyncAction, SyncEntry, SyncEntryState, SyncManifest, SyncMergePlan, merge_manifests,
-    scan_directory, unix_time_now_ms, with_tombstones,
+    SyncAction, SyncEntry, SyncEntryState, SyncManifest, SyncMergePlan, join_sync_path,
+    merge_manifests, scan_directory, sync_apply_target_path, sync_temp_path, unix_time_now_ms,
+    with_tombstones,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use futures_util::StreamExt;
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_blobs::{
@@ -98,8 +99,19 @@ impl DocsSyncNode {
         manifest: SyncManifest,
     ) -> Result<DocsExportResult> {
         let doc = self.docs.create().await.context("create docs document")?;
+        self.export_existing_manifest(&doc, root, previous_manifest, manifest)
+            .await
+    }
+
+    pub async fn export_existing_manifest(
+        &self,
+        doc: &Doc,
+        root: &Path,
+        previous_manifest: &SyncManifest,
+        manifest: SyncManifest,
+    ) -> Result<DocsExportResult> {
         let (content_blobs, manifest) = self
-            .publish_manifest(&doc, root, previous_manifest, &manifest)
+            .publish_manifest(doc, root, previous_manifest, &manifest)
             .await?;
         let ticket = doc
             .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
@@ -124,7 +136,48 @@ impl DocsSyncNode {
         let content_blobs = preload_manifest_blobs(&self.blobs, root, &manifest).await?;
         let author = self.docs.author_default().await?;
         write_manifest(doc, author, &manifest).await?;
+        self.advertise_peer_ticket(doc).await?;
         Ok((content_blobs, manifest))
+    }
+
+    pub async fn advertise_peer_ticket(&self, doc: &Doc) -> Result<String> {
+        let ticket = doc
+            .share(ShareMode::Write, AddrInfoOptions::RelayAndAddresses)
+            .await
+            .context("share docs document for peer advertisement")?
+            .to_string();
+        let author = self.docs.author_default().await?;
+        let key = format!("{PEER_TICKET_PREFIX}{author}");
+        doc.set_bytes(author, key, ticket.clone())
+            .await
+            .context("write docs peer ticket advertisement")?;
+        Ok(ticket)
+    }
+
+    pub async fn read_peer_tickets(&self, doc: &Doc) -> Result<Vec<String>> {
+        let query = Query::single_latest_per_key()
+            .key_prefix(PEER_TICKET_PREFIX)
+            .include_empty()
+            .build();
+        let stream = doc
+            .get_many(query)
+            .await
+            .context("query docs peer ticket entries")?;
+        tokio::pin!(stream);
+        let mut tickets = Vec::new();
+        while let Some(item) = stream.next().await {
+            let entry = item.context("read docs peer ticket entry")?;
+            if entry.content_len() == 0 {
+                continue;
+            }
+            let bytes = self
+                .blobs
+                .get_bytes(entry.content_hash())
+                .await
+                .context("load docs peer ticket blob")?;
+            tickets.push(String::from_utf8(bytes.to_vec()).context("decode docs peer ticket")?);
+        }
+        Ok(tickets)
     }
 
     pub async fn import_manifest(&self, ticket: &str, wait_ms: u64) -> Result<SyncManifest> {
@@ -146,6 +199,14 @@ impl DocsSyncNode {
             .await
             .context("import doc ticket")?;
         Ok(DocsImportState { doc, peer })
+    }
+
+    pub async fn import_ticket_namespace(&self, ticket: &str) -> Result<Doc> {
+        let ticket = DocTicket::from_str(ticket).context("parse doc ticket")?;
+        self.docs
+            .import_namespace(ticket.capability)
+            .await
+            .context("import doc ticket namespace")
     }
 
     pub async fn read_doc_manifest(&self, doc: &Doc) -> Result<SyncManifest> {
@@ -173,12 +234,12 @@ impl DocsSyncNode {
         let entry = manifest.get(relative_path).cloned().ok_or_else(|| {
             anyhow::anyhow!("path {relative_path} not found in imported manifest")
         })?;
-        let descriptor = match entry.state {
+        let target = sync_apply_target_path(output_root, relative_path, &entry)?;
+        let descriptor = match &entry.state {
             SyncEntryState::File(descriptor) => descriptor,
             SyncEntryState::Tombstone => bail!("path {relative_path} is a tombstone"),
         };
-        let target = output_root.join(relative_path);
-        self.fetch_descriptor_to_path(peer, &descriptor, &target)
+        self.fetch_descriptor_to_path(peer, descriptor, &target)
             .await?;
         Ok(manifest)
     }
@@ -243,18 +304,28 @@ impl DocsSyncNode {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create fetched file parent {}", parent.display()))?;
         }
+        ensure!(
+            !target.is_dir(),
+            "sync target is a directory: {}",
+            target.display()
+        );
         let bytes = self
             .blobs
             .get_bytes(descriptor.hash)
             .await
             .context("read fetched blob bytes")?;
-        let mut file = tokio::fs::File::create(target)
+        let tmp = sync_temp_path(target);
+        let mut file = tokio::fs::File::create(&tmp)
             .await
-            .with_context(|| format!("create fetched file {}", target.display()))?;
+            .with_context(|| format!("create fetched temp file {}", tmp.display()))?;
         file.write_all(&bytes)
             .await
-            .with_context(|| format!("write fetched file {}", target.display()))?;
+            .with_context(|| format!("write fetched temp file {}", tmp.display()))?;
         file.flush().await?;
+        drop(file);
+        tokio::fs::rename(&tmp, target)
+            .await
+            .with_context(|| format!("finalize fetched file {}", target.display()))?;
         Ok(())
     }
 
@@ -275,12 +346,45 @@ impl DocsSyncNode {
                     let SyncEntryState::File(descriptor) = &entry.state else {
                         continue;
                     };
-                    self.fetch_descriptor_to_path(peer.clone(), descriptor, &local_root.join(path))
+                    let target = sync_apply_target_path(local_root, path, entry)?;
+                    self.fetch_descriptor_to_path(peer.clone(), descriptor, &target)
                         .await?;
                 }
+                SyncAction::RenamePath {
+                    from_path,
+                    to_path,
+                    entry,
+                } => {
+                    let source = join_sync_path(local_root, from_path)?;
+                    let target = sync_apply_target_path(local_root, to_path, entry)?;
+                    if source.is_file() {
+                        if let Some(parent) = target.parent() {
+                            fs::create_dir_all(parent).with_context(|| {
+                                format!("create sync rename target parent {}", parent.display())
+                            })?;
+                        }
+                        fs::rename(&source, &target).with_context(|| {
+                            format!(
+                                "rename synced local file from {} to {}",
+                                source.display(),
+                                target.display()
+                            )
+                        })?;
+                        prune_empty_parent_dirs(local_root, &source)?;
+                    } else {
+                        let SyncEntryState::File(descriptor) = &entry.state else {
+                            continue;
+                        };
+                        self.fetch_descriptor_to_path(peer.clone(), descriptor, &target)
+                            .await?;
+                    }
+                }
                 SyncAction::DeletePath { path } => {
-                    let target = local_root.join(path);
+                    let target = join_sync_path(local_root, path)?;
                     if target.exists() {
+                        if target.is_dir() {
+                            continue;
+                        }
                         fs::remove_file(&target).with_context(|| {
                             format!("remove synced local file {}", target.display())
                         })?;
@@ -298,7 +402,7 @@ impl DocsSyncNode {
                     self.fetch_descriptor_to_path(
                         peer.clone(),
                         descriptor,
-                        &local_root.join(conflict_path),
+                        &sync_apply_target_path(local_root, conflict_path, entry)?,
                     )
                     .await?;
                 }
@@ -321,7 +425,7 @@ impl DocsSyncNode {
                     self.fetch_descriptor_to_path(
                         peer.clone(),
                         descriptor,
-                        &local_root.join(&entry.path),
+                        &sync_apply_target_path(local_root, &entry.path, entry)?,
                     )
                     .await?;
                     applied += 1;
@@ -380,6 +484,7 @@ pub async fn read_manifest(blobs: &BlobsStore, doc: &Doc) -> Result<SyncManifest
 }
 
 const MANIFEST_PREFIX: &str = "manifest/";
+const PEER_TICKET_PREFIX: &str = "peer-ticket/";
 
 fn manifest_key(path: &str) -> String {
     format!("{MANIFEST_PREFIX}{path}")
@@ -457,7 +562,10 @@ fn prune_empty_parent_dirs(root: &Path, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::DocsSyncNode;
-    use altair_vega::{DEFAULT_SYNC_CHUNK_SIZE_BYTES, SyncAction, scan_directory};
+    use altair_vega::{
+        DEFAULT_SYNC_CHUNK_SIZE_BYTES, SyncAction, SyncEntryState, SyncManifest,
+        conflict_copy_path, scan_directory,
+    };
     use anyhow::Result;
     use tempfile::TempDir;
     use tokio::time::{Duration, sleep};
@@ -587,6 +695,509 @@ mod tests {
 
         client.shutdown().await?;
         server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_join_applies_missed_delete_after_later_publish() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(remote_root.join("deleted.txt"), b"remove me\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        let doc = server.open_doc(&export.doc_id).await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let initial_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        client
+            .seed_local_from_manifest(imported.peer.clone(), &local_root, &initial_remote)
+            .await?;
+        assert_eq!(
+            std::fs::read(local_root.join("deleted.txt"))?,
+            b"remove me\n"
+        );
+
+        std::fs::remove_file(remote_root.join("deleted.txt"))?;
+        let after_delete = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, deleted_manifest) = server
+            .publish_manifest(&doc, &remote_root, &export.manifest, &after_delete)
+            .await?;
+        assert!(
+            deleted_manifest
+                .get("deleted.txt")
+                .is_some_and(|entry| entry.is_tombstone())
+        );
+
+        std::fs::write(remote_root.join("added-after-delete.txt"), b"new file\n")?;
+        let after_add = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, republished_manifest) = server
+            .publish_manifest(&doc, &remote_root, &deleted_manifest, &after_add)
+            .await?;
+        assert!(
+            republished_manifest
+                .get("deleted.txt")
+                .is_some_and(|entry| entry.is_tombstone())
+        );
+
+        let synced_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &republished_manifest).await?;
+        let plan = client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &initial_remote,
+                &local_root,
+                &synced_remote,
+            )
+            .await?;
+
+        assert!(plan.actions.iter().any(|action| matches!(
+            action,
+            SyncAction::DeletePath { path } if path == "deleted.txt"
+        )));
+        assert!(!local_root.join("deleted.txt").exists());
+        assert_eq!(
+            std::fs::read(local_root.join("added-after-delete.txt"))?,
+            b"new file\n"
+        );
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_join_applies_remote_rename_without_refetching_as_add_delete() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(remote_root.join("old.txt"), b"rename me\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        let doc = server.open_doc(&export.doc_id).await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let initial_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        client
+            .seed_local_from_manifest(imported.peer.clone(), &local_root, &initial_remote)
+            .await?;
+
+        std::fs::rename(remote_root.join("old.txt"), remote_root.join("new.txt"))?;
+        let remote_renamed = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, remote_manifest) = server
+            .publish_manifest(&doc, &remote_root, &export.manifest, &remote_renamed)
+            .await?;
+        let synced_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &remote_manifest).await?;
+
+        let plan = client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &initial_remote,
+                &local_root,
+                &synced_remote,
+            )
+            .await?;
+
+        assert_eq!(plan.actions.len(), 1);
+        assert!(matches!(
+            &plan.actions[0],
+            SyncAction::RenamePath { from_path, to_path, .. }
+                if from_path == "old.txt" && to_path == "new.txt"
+        ));
+        assert!(!local_root.join("old.txt").exists());
+        assert_eq!(std::fs::read(local_root.join("new.txt"))?, b"rename me\n");
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_join_reconciles_remote_conflict_before_publishing_local() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(remote_root.join("readme.txt"), b"base\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        let doc = server.open_doc(&export.doc_id).await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let initial_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        client
+            .seed_local_from_manifest(imported.peer.clone(), &local_root, &initial_remote)
+            .await?;
+
+        std::fs::write(local_root.join("readme.txt"), b"local change\n")?;
+        std::fs::write(remote_root.join("readme.txt"), b"remote change\n")?;
+        let remote_changed = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, remote_manifest) = server
+            .publish_manifest(&doc, &remote_root, &export.manifest, &remote_changed)
+            .await?;
+        let synced_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &remote_manifest).await?;
+
+        let plan = client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &initial_remote,
+                &local_root,
+                &synced_remote,
+            )
+            .await?;
+        assert_eq!(plan.conflicts.len(), 1);
+        let conflict_path = match &plan.actions[0] {
+            SyncAction::CreateConflictCopy { conflict_path, .. } => conflict_path,
+            other => panic!("expected conflict copy action, got {other:?}"),
+        };
+        assert_eq!(
+            std::fs::read(local_root.join(conflict_path))?,
+            b"remote change\n"
+        );
+        assert_eq!(
+            std::fs::read(local_root.join("readme.txt"))?,
+            b"local change\n"
+        );
+
+        let local_after_conflict = scan_directory(&local_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, published_local) = client
+            .publish_manifest(
+                &imported.doc,
+                &local_root,
+                &synced_remote,
+                &local_after_conflict,
+            )
+            .await?;
+        assert!(published_local.get(conflict_path).is_none());
+        assert_eq!(
+            published_local.get("readme.txt"),
+            local_after_conflict.get("readme.txt")
+        );
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_join_keeps_local_edit_when_remote_deletes() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(remote_root.join("readme.txt"), b"base\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        let doc = server.open_doc(&export.doc_id).await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let initial_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        client
+            .seed_local_from_manifest(imported.peer.clone(), &local_root, &initial_remote)
+            .await?;
+
+        std::fs::write(local_root.join("readme.txt"), b"local edit\n")?;
+        std::fs::remove_file(remote_root.join("readme.txt"))?;
+        let remote_deleted = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, remote_manifest) = server
+            .publish_manifest(&doc, &remote_root, &export.manifest, &remote_deleted)
+            .await?;
+        let synced_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &remote_manifest).await?;
+
+        let plan = client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &initial_remote,
+                &local_root,
+                &synced_remote,
+            )
+            .await?;
+
+        assert!(plan.actions.is_empty());
+        assert_eq!(plan.conflicts.len(), 1);
+        assert_eq!(
+            std::fs::read(local_root.join("readme.txt"))?,
+            b"local edit\n"
+        );
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_join_preserves_local_delete_as_remote_conflict_copy() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(remote_root.join("readme.txt"), b"base\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        let doc = server.open_doc(&export.doc_id).await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let initial_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        client
+            .seed_local_from_manifest(imported.peer.clone(), &local_root, &initial_remote)
+            .await?;
+
+        std::fs::remove_file(local_root.join("readme.txt"))?;
+        std::fs::write(remote_root.join("readme.txt"), b"remote edit\n")?;
+        let remote_changed = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, remote_manifest) = server
+            .publish_manifest(&doc, &remote_root, &export.manifest, &remote_changed)
+            .await?;
+        let synced_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &remote_manifest).await?;
+
+        let plan = client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &initial_remote,
+                &local_root,
+                &synced_remote,
+            )
+            .await?;
+        assert_eq!(plan.conflicts.len(), 1);
+        let conflict_path = match &plan.actions[0] {
+            SyncAction::CreateConflictCopy { conflict_path, .. } => conflict_path,
+            other => panic!("expected conflict copy action, got {other:?}"),
+        };
+
+        assert!(!local_root.join("readme.txt").exists());
+        assert_eq!(
+            std::fs::read(local_root.join(conflict_path))?,
+            b"remote edit\n"
+        );
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_join_writes_remote_file_directory_collision_as_conflict_copy() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(local_root.join("docs.txt"))?;
+        std::fs::write(local_root.join("docs.txt/local.txt"), b"local dir file\n")?;
+        std::fs::write(remote_root.join("docs.txt"), b"remote file\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let remote_manifest =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        let plan = client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &SyncManifest::default(),
+                &local_root,
+                &remote_manifest,
+            )
+            .await?;
+
+        assert_eq!(plan.actions.len(), 1);
+        let remote_entry = remote_manifest.get("docs.txt").unwrap();
+        let conflict_path = conflict_copy_path("docs.txt", remote_entry);
+        assert_eq!(
+            std::fs::read(local_root.join("docs.txt/local.txt"))?,
+            b"local dir file\n"
+        );
+        assert_eq!(
+            std::fs::read(local_root.join(conflict_path))?,
+            b"remote file\n"
+        );
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_join_writes_remote_nested_file_parent_collision_as_conflict_copy() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(remote_root.join("docs"))?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(local_root.join("docs"), b"local parent file\n")?;
+        std::fs::write(remote_root.join("docs/readme.txt"), b"remote nested file\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let remote_manifest =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        let plan = client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &SyncManifest::default(),
+                &local_root,
+                &remote_manifest,
+            )
+            .await?;
+
+        assert_eq!(plan.actions.len(), 1);
+        let remote_entry = remote_manifest.get("docs/readme.txt").unwrap();
+        let conflict_path = conflict_copy_path("docs__readme.txt", remote_entry);
+        assert_eq!(
+            std::fs::read(local_root.join("docs"))?,
+            b"local parent file\n"
+        );
+        assert_eq!(
+            std::fs::read(local_root.join(conflict_path))?,
+            b"remote nested file\n"
+        );
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_join_restart_uses_saved_base_without_reconflicting() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        let client_state = temp.path().join("client-state");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(remote_root.join("readme.txt"), b"base\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        let doc = server.open_doc(&export.doc_id).await?;
+
+        let client = DocsSyncNode::spawn_persistent(&client_state).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let initial_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        client
+            .seed_local_from_manifest(imported.peer.clone(), &local_root, &initial_remote)
+            .await?;
+        client.shutdown().await?;
+
+        std::fs::write(remote_root.join("readme.txt"), b"remote after restart\n")?;
+        let remote_changed = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, remote_manifest) = server
+            .publish_manifest(&doc, &remote_root, &export.manifest, &remote_changed)
+            .await?;
+
+        let restarted = DocsSyncNode::spawn_persistent(&client_state).await?;
+        let restarted_import = restarted.import_doc(&export.ticket).await?;
+        let synced_remote =
+            wait_for_specific_manifest(&restarted, &restarted_import.doc, &remote_manifest).await?;
+        let plan = restarted
+            .apply_remote_manifest(
+                restarted_import.peer.clone(),
+                &initial_remote,
+                &local_root,
+                &synced_remote,
+            )
+            .await?;
+
+        assert_eq!(plan.actions.len(), 1);
+        assert!(plan.conflicts.is_empty());
+        assert_eq!(
+            std::fs::read(local_root.join("readme.txt"))?,
+            b"remote after restart\n"
+        );
+
+        restarted.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_host_restart_reuses_existing_document_namespace() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::write(remote_root.join("readme.txt"), b"base\n")?;
+
+        let server_state = temp.path().join("server-state");
+        let first_server = DocsSyncNode::spawn_persistent(&server_state).await?;
+        let first_manifest = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let first_export = first_server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        first_server.shutdown().await?;
+
+        std::fs::write(remote_root.join("readme.txt"), b"after restart\n")?;
+        let restarted_server = DocsSyncNode::spawn_persistent(&server_state).await?;
+        let doc = restarted_server.open_doc(&first_export.doc_id).await?;
+        let second_manifest = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let second_export = restarted_server
+            .export_existing_manifest(&doc, &remote_root, &first_manifest, second_manifest)
+            .await?;
+
+        assert_eq!(second_export.doc_id, first_export.doc_id);
+        assert_eq!(
+            second_export
+                .manifest
+                .get("readme.txt")
+                .and_then(|entry| match &entry.state {
+                    SyncEntryState::File(descriptor) => Some(descriptor.hash),
+                    SyncEntryState::Tombstone => None,
+                }),
+            scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?
+                .get("readme.txt")
+                .and_then(|entry| match &entry.state {
+                    SyncEntryState::File(descriptor) => Some(descriptor.hash),
+                    SyncEntryState::Tombstone => None,
+                })
+        );
+
+        restarted_server.shutdown().await?;
         Ok(())
     }
 

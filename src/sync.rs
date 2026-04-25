@@ -5,7 +5,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -34,6 +34,11 @@ pub struct SyncManifest {
 pub enum SyncAction {
     UpsertFile {
         path: String,
+        entry: SyncEntry,
+    },
+    RenamePath {
+        from_path: String,
+        to_path: String,
         entry: SyncEntry,
     },
     DeletePath {
@@ -84,13 +89,15 @@ pub fn with_tombstones(
 ) -> SyncManifest {
     let mut merged = current.clone();
     for (path, previous_entry) in &previous.entries {
-        if previous_entry.is_tombstone() {
-            continue;
-        }
         if merged.entries.contains_key(path) {
             continue;
         }
-        merged.insert(SyncEntry::tombstone(path.clone(), tombstone_unix_ms));
+        let entry = if previous_entry.is_tombstone() {
+            previous_entry.clone()
+        } else {
+            SyncEntry::tombstone(path.clone(), tombstone_unix_ms)
+        };
+        merged.insert(entry);
     }
     merged
 }
@@ -114,11 +121,24 @@ pub fn apply_merge_plan(local_root: &Path, remote_root: &Path, plan: &SyncMergeP
                 let SyncEntryState::File(descriptor) = &entry.state else {
                     continue;
                 };
-                copy_verified_file(&remote_root.join(path), &local_root.join(path), descriptor)?;
+                let target = sync_apply_target_path(local_root, path, entry)?;
+                copy_verified_file(&join_sync_path(remote_root, path)?, &target, descriptor)?;
+            }
+            SyncAction::RenamePath {
+                from_path,
+                to_path,
+                entry,
+            } => {
+                let source = join_sync_path(local_root, from_path)?;
+                let target = sync_apply_target_path(local_root, to_path, entry)?;
+                move_synced_file(local_root, &source, &target)?;
             }
             SyncAction::DeletePath { path } => {
-                let target = local_root.join(path);
+                let target = join_sync_path(local_root, path)?;
                 if target.exists() {
+                    if target.is_dir() {
+                        continue;
+                    }
                     fs::remove_file(&target)
                         .with_context(|| format!("remove synced file {}", target.display()))?;
                     prune_empty_parent_dirs(local_root, &target)?;
@@ -133,8 +153,8 @@ pub fn apply_merge_plan(local_root: &Path, remote_root: &Path, plan: &SyncMergeP
                     continue;
                 };
                 copy_verified_file(
-                    &remote_root.join(original_path),
-                    &local_root.join(conflict_path),
+                    &join_sync_path(remote_root, original_path)?,
+                    &sync_apply_target_path(local_root, conflict_path, entry)?,
                     descriptor,
                 )?;
             }
@@ -230,11 +250,60 @@ pub fn scan_directory(root: &Path, chunk_size_bytes: u32) -> Result<SyncManifest
     Ok(SyncManifest::new(entries))
 }
 
+pub fn join_sync_path(root: &Path, relative_path: &str) -> Result<PathBuf> {
+    let relative = Path::new(relative_path);
+    ensure!(
+        !relative.is_absolute(),
+        "sync path must be relative: {relative_path}"
+    );
+    let mut clean = PathBuf::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(value) => clean.push(value),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                bail!("sync path escapes root: {relative_path}")
+            }
+        }
+    }
+    ensure!(!clean.as_os_str().is_empty(), "sync path is empty");
+    Ok(root.join(clean))
+}
+
+pub fn sync_apply_target_path(
+    root: &Path,
+    relative_path: &str,
+    entry: &SyncEntry,
+) -> Result<PathBuf> {
+    let target = join_sync_path(root, relative_path)?;
+    if target.is_dir() {
+        return join_sync_path(root, &conflict_copy_path(relative_path, entry));
+    }
+
+    let mut current = root.to_path_buf();
+    let mut components = Vec::new();
+    for component in Path::new(relative_path).components() {
+        if let Component::Normal(value) = component {
+            components.push(value.to_string_lossy().to_string());
+        }
+    }
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        current.push(component);
+        if current.is_file() {
+            let flattened = components.join("__");
+            return join_sync_path(root, &conflict_copy_path(&flattened, entry));
+        }
+    }
+
+    Ok(target)
+}
+
 pub fn merge_manifests(
     base: &SyncManifest,
     local: &SyncManifest,
     remote: &SyncManifest,
 ) -> SyncMergePlan {
+    let remote_renames = detect_remote_renames(base, local, remote);
     let mut keys = BTreeSet::new();
     keys.extend(base.entries.keys().cloned());
     keys.extend(local.entries.keys().cloned());
@@ -242,6 +311,18 @@ pub fn merge_manifests(
 
     let mut plan = SyncMergePlan::default();
     for path in keys {
+        if remote_renames.values().any(|(to_path, _)| to_path == &path) {
+            continue;
+        }
+        if let Some((to_path, entry)) = remote_renames.get(&path) {
+            plan.actions.push(SyncAction::RenamePath {
+                from_path: path,
+                to_path: to_path.clone(),
+                entry: entry.clone(),
+            });
+            continue;
+        }
+
         let base_entry = base.get(&path);
         let local_entry = local.get(&path);
         let remote_entry = remote.get(&path);
@@ -262,6 +343,66 @@ pub fn merge_manifests(
     }
 
     plan
+}
+
+fn detect_remote_renames(
+    base: &SyncManifest,
+    local: &SyncManifest,
+    remote: &SyncManifest,
+) -> BTreeMap<String, (String, SyncEntry)> {
+    let mut added_by_descriptor = BTreeMap::<(u64, [u8; 32]), Vec<&SyncEntry>>::new();
+    for (path, remote_entry) in &remote.entries {
+        let Some(descriptor) = file_descriptor(remote_entry) else {
+            continue;
+        };
+        if base.get(path).is_some() || local.get(path).is_some() {
+            continue;
+        }
+        added_by_descriptor
+            .entry(descriptor_key(descriptor))
+            .or_default()
+            .push(remote_entry);
+    }
+
+    let mut renames = BTreeMap::new();
+    let mut used_targets = BTreeSet::new();
+    for (path, base_entry) in &base.entries {
+        if !entry_state_eq(local.get(path), Some(base_entry)) {
+            continue;
+        }
+        if !remote
+            .get(path)
+            .map(SyncEntry::is_tombstone)
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        let Some(descriptor) = file_descriptor(base_entry) else {
+            continue;
+        };
+        let Some(candidates) = added_by_descriptor.get(&descriptor_key(descriptor)) else {
+            continue;
+        };
+        let Some(target) = candidates
+            .iter()
+            .find(|entry| used_targets.insert(entry.path.clone()))
+        else {
+            continue;
+        };
+        renames.insert(path.clone(), (target.path.clone(), (*target).clone()));
+    }
+    renames
+}
+
+fn file_descriptor(entry: &SyncEntry) -> Option<&FileDescriptor> {
+    match &entry.state {
+        SyncEntryState::File(descriptor) => Some(descriptor),
+        SyncEntryState::Tombstone => None,
+    }
+}
+
+fn descriptor_key(descriptor: &FileDescriptor) -> (u64, [u8; 32]) {
+    (descriptor.size_bytes, descriptor.hash)
 }
 
 fn apply_remote_change(path: &str, remote_entry: Option<&SyncEntry>, plan: &mut SyncMergePlan) {
@@ -428,8 +569,13 @@ fn copy_verified_file(source: &Path, target: &Path, descriptor: &FileDescriptor)
         fs::create_dir_all(parent)
             .with_context(|| format!("create sync target parent {}", parent.display()))?;
     }
+    ensure!(
+        !target.is_dir(),
+        "sync target is a directory: {}",
+        target.display()
+    );
 
-    let tmp = target.with_extension("altair-tmp");
+    let tmp = sync_temp_path(target);
     fs::copy(source, &tmp).with_context(|| {
         format!(
             "copy synced file from {} to {}",
@@ -439,6 +585,36 @@ fn copy_verified_file(source: &Path, target: &Path, descriptor: &FileDescriptor)
     })?;
     fs::rename(&tmp, target)
         .with_context(|| format!("finalize synced file {}", target.display()))?;
+    Ok(())
+}
+
+fn move_synced_file(root: &Path, source: &Path, target: &Path) -> Result<()> {
+    ensure!(
+        source.is_file(),
+        "sync rename source is not a file: {}",
+        source.display()
+    );
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create sync rename target parent {}", parent.display()))?;
+    }
+    ensure!(
+        !target.is_dir(),
+        "sync rename target is a directory: {}",
+        target.display()
+    );
+    if target.exists() {
+        fs::remove_file(target)
+            .with_context(|| format!("replace sync rename target {}", target.display()))?;
+    }
+    fs::rename(source, target).with_context(|| {
+        format!(
+            "rename synced file from {} to {}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    prune_empty_parent_dirs(root, source)?;
     Ok(())
 }
 
@@ -489,7 +665,11 @@ fn should_ignore_sync_path(path: &Path, is_dir: bool) -> bool {
     if is_dir {
         return name == ".git" || name.starts_with(".altair-sync-");
     }
-    name.contains(".altair-conflict-")
+    name.contains(".altair-conflict-") || name.ends_with(".altair-tmp")
+}
+
+pub fn sync_temp_path(target: &Path) -> PathBuf {
+    target.with_extension("altair-tmp")
 }
 
 fn system_time_to_unix_ms(value: SystemTime) -> Option<u64> {
@@ -499,7 +679,7 @@ fn system_time_to_unix_ms(value: SystemTime) -> Option<u64> {
         .map(|duration| duration.as_millis() as u64)
 }
 
-fn conflict_copy_path(path: &str, remote: &SyncEntry) -> String {
+pub fn conflict_copy_path(path: &str, remote: &SyncEntry) -> String {
     let suffix = match &remote.state {
         SyncEntryState::File(descriptor) => descriptor.hash[..4]
             .iter()
@@ -538,8 +718,9 @@ fn entry_state_eq(left: Option<&SyncEntry>, right: Option<&SyncEntry>) -> bool {
 mod tests {
     use super::{
         DEFAULT_SYNC_CHUNK_SIZE_BYTES, SyncAction, SyncChange, SyncChangeKind,
-        SyncConflictResolution, SyncEntry, SyncManifest, apply_merge_plan, diff_manifests,
-        merge_manifests, scan_directory, unix_time_now_ms, with_tombstones,
+        SyncConflictResolution, SyncEntry, SyncEntryState, SyncManifest, apply_merge_plan,
+        conflict_copy_path, diff_manifests, join_sync_path, merge_manifests, scan_directory,
+        unix_time_now_ms, with_tombstones,
     };
     use crate::FileDescriptor;
     use std::{fs, path::Path};
@@ -669,6 +850,57 @@ mod tests {
     }
 
     #[test]
+    fn applies_remote_rename_when_local_is_unchanged() {
+        let base_entry = file_entry("old.txt", 1);
+        let renamed_entry = SyncEntry::file(
+            "new.txt",
+            match base_entry.state.clone() {
+                SyncEntryState::File(descriptor) => descriptor,
+                SyncEntryState::Tombstone => unreachable!(),
+            },
+            2,
+        );
+        let base = SyncManifest::new([base_entry.clone()]);
+        let local = SyncManifest::new([base_entry]);
+        let remote = SyncManifest::new([SyncEntry::tombstone("old.txt", 2), renamed_entry.clone()]);
+
+        let plan = merge_manifests(&base, &local, &remote);
+
+        assert_eq!(
+            plan.actions,
+            vec![SyncAction::RenamePath {
+                from_path: "old.txt".to_string(),
+                to_path: "new.txt".to_string(),
+                entry: renamed_entry,
+            }]
+        );
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn rename_action_moves_local_file() {
+        let local = TempDir::new().unwrap();
+        let remote = TempDir::new().unwrap();
+        fs::write(local.path().join("old.txt"), b"content").unwrap();
+        fs::write(remote.path().join("new.txt"), b"content").unwrap();
+        let remote_manifest = scan_directory(remote.path(), DEFAULT_SYNC_CHUNK_SIZE_BYTES).unwrap();
+        let renamed_entry = remote_manifest.get("new.txt").unwrap().clone();
+        let plan = super::SyncMergePlan {
+            actions: vec![SyncAction::RenamePath {
+                from_path: "old.txt".to_string(),
+                to_path: "new.txt".to_string(),
+                entry: renamed_entry,
+            }],
+            conflicts: Vec::new(),
+        };
+
+        apply_merge_plan(local.path(), remote.path(), &plan).unwrap();
+
+        assert!(!local.path().join("old.txt").exists());
+        assert_eq!(fs::read(local.path().join("new.txt")).unwrap(), b"content");
+    }
+
+    #[test]
     fn applies_upsert_and_delete_actions_to_local_tree() {
         let local = TempDir::new().unwrap();
         let remote = TempDir::new().unwrap();
@@ -696,6 +928,83 @@ mod tests {
             b"remote docs"
         );
         assert!(!local.path().join("stale.txt").exists());
+    }
+
+    #[test]
+    fn writes_remote_file_directory_collision_as_conflict_copy() {
+        let local = TempDir::new().unwrap();
+        let remote = TempDir::new().unwrap();
+        fs::create_dir_all(local.path().join("docs.txt")).unwrap();
+        fs::write(remote.path().join("docs.txt"), b"remote docs").unwrap();
+
+        let remote_manifest = scan_directory(remote.path(), DEFAULT_SYNC_CHUNK_SIZE_BYTES).unwrap();
+        let docs_entry = remote_manifest.get("docs.txt").unwrap().clone();
+        let conflict_path = conflict_copy_path("docs.txt", &docs_entry);
+        let plan = super::SyncMergePlan {
+            actions: vec![SyncAction::UpsertFile {
+                path: "docs.txt".to_string(),
+                entry: docs_entry,
+            }],
+            conflicts: Vec::new(),
+        };
+
+        apply_merge_plan(local.path(), remote.path(), &plan).unwrap();
+        assert!(local.path().join("docs.txt").is_dir());
+        assert_eq!(
+            fs::read(local.path().join(conflict_path)).unwrap(),
+            b"remote docs"
+        );
+    }
+
+    #[test]
+    fn writes_remote_nested_file_parent_collision_as_flat_conflict_copy() {
+        let local = TempDir::new().unwrap();
+        let remote = TempDir::new().unwrap();
+        fs::write(local.path().join("docs"), b"local parent file").unwrap();
+        fs::create_dir_all(remote.path().join("docs")).unwrap();
+        fs::write(remote.path().join("docs/readme.txt"), b"remote docs").unwrap();
+
+        let remote_manifest = scan_directory(remote.path(), DEFAULT_SYNC_CHUNK_SIZE_BYTES).unwrap();
+        let remote_entry = remote_manifest.get("docs/readme.txt").unwrap().clone();
+        let conflict_path = conflict_copy_path("docs__readme.txt", &remote_entry);
+        let plan = super::SyncMergePlan {
+            actions: vec![SyncAction::UpsertFile {
+                path: "docs/readme.txt".to_string(),
+                entry: remote_entry,
+            }],
+            conflicts: Vec::new(),
+        };
+
+        apply_merge_plan(local.path(), remote.path(), &plan).unwrap();
+        assert_eq!(
+            fs::read(local.path().join("docs")).unwrap(),
+            b"local parent file"
+        );
+        assert_eq!(
+            fs::read(local.path().join(conflict_path)).unwrap(),
+            b"remote docs"
+        );
+    }
+
+    #[test]
+    fn skips_remote_file_delete_when_local_path_is_directory() {
+        let local = TempDir::new().unwrap();
+        let remote = TempDir::new().unwrap();
+        fs::create_dir_all(local.path().join("docs.txt")).unwrap();
+        fs::write(local.path().join("docs.txt/local.txt"), b"local").unwrap();
+
+        let plan = super::SyncMergePlan {
+            actions: vec![SyncAction::DeletePath {
+                path: "docs.txt".to_string(),
+            }],
+            conflicts: Vec::new(),
+        };
+
+        apply_merge_plan(local.path(), remote.path(), &plan).unwrap();
+        assert_eq!(
+            fs::read(local.path().join("docs.txt/local.txt")).unwrap(),
+            b"local"
+        );
     }
 
     #[test]
@@ -771,6 +1080,7 @@ mod tests {
             b"conflict",
         )
         .unwrap();
+        fs::write(temp.path().join("readme.altair-tmp"), b"partial").unwrap();
         fs::write(state_dir.join("meta.json"), b"{}").unwrap();
 
         let manifest = scan_directory(temp.path(), DEFAULT_SYNC_CHUNK_SIZE_BYTES).unwrap();
@@ -784,6 +1094,19 @@ mod tests {
     }
 
     #[test]
+    fn sync_paths_must_stay_under_root() {
+        let root = Path::new("/tmp/sync-root");
+
+        assert_eq!(
+            join_sync_path(root, "nested/file.txt").unwrap(),
+            root.join("nested/file.txt")
+        );
+        assert!(join_sync_path(root, "../escape.txt").is_err());
+        assert!(join_sync_path(root, "/absolute.txt").is_err());
+        assert!(join_sync_path(root, "").is_err());
+    }
+
+    #[test]
     fn adds_tombstones_for_missing_previous_entries() {
         let previous = SyncManifest::new([file_entry("gone.txt", 1), file_entry("keep.txt", 2)]);
         let current = SyncManifest::new([file_entry("keep.txt", 2)]);
@@ -792,6 +1115,40 @@ mod tests {
         let gone = merged.get("gone.txt").unwrap();
         assert!(gone.is_tombstone());
         assert!(merged.get("keep.txt").is_some());
+    }
+
+    #[test]
+    fn retains_existing_tombstones_across_republish() {
+        let previous_tombstone = SyncEntry::tombstone("gone.txt", 1234);
+        let previous = SyncManifest::new([previous_tombstone.clone(), file_entry("keep.txt", 2)]);
+        let current = SyncManifest::new([file_entry("keep.txt", 2)]);
+
+        let merged = with_tombstones(&previous, &current, 9999);
+
+        assert_eq!(merged.get("gone.txt"), Some(&previous_tombstone));
+        assert!(merged.get("keep.txt").is_some());
+    }
+
+    #[test]
+    fn missed_delete_still_applies_after_later_remote_publish() {
+        let base_entry = file_entry("deleted.txt", 1);
+        let base = SyncManifest::new([base_entry.clone()]);
+        let local = SyncManifest::new([base_entry]);
+        let remote = SyncManifest::new([
+            SyncEntry::tombstone("deleted.txt", 2000),
+            file_entry("added-after-delete.txt", 3),
+        ]);
+
+        let plan = merge_manifests(&base, &local, &remote);
+
+        assert!(plan.actions.contains(&SyncAction::DeletePath {
+            path: "deleted.txt".to_string(),
+        }));
+        assert!(plan.actions.iter().any(|action| matches!(
+            action,
+            SyncAction::UpsertFile { path, .. } if path == "added-after-delete.txt"
+        )));
+        assert!(plan.conflicts.is_empty());
     }
 
     fn file_entry(path: &str, salt: u8) -> SyncEntry {

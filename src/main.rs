@@ -1201,24 +1201,20 @@ async fn main() -> Result<()> {
                         "host-{}-last-published-manifest.json",
                         state_key(&root.display().to_string())
                     ));
+                    let doc_state_path = host_doc_state_path(&state_dir, &root);
                     let previous_manifest = if manifest_state_path.exists() {
-                        serde_json::from_slice::<altair_vega::SyncManifest>(
-                            &std::fs::read(&manifest_state_path).with_context(|| {
-                                format!("read manifest state {}", manifest_state_path.display())
-                            })?,
-                        )
-                        .with_context(|| {
-                            format!(
-                                "deserialize manifest state {}",
-                                manifest_state_path.display()
-                            )
-                        })?
+                        load_manifest_state(&manifest_state_path, "host publish")?
                     } else {
                         current_manifest.clone()
                     };
-                    let result = node
-                        .export_manifest(&root, &previous_manifest, current_manifest.clone())
-                        .await?;
+                    let (doc, result) = export_host_manifest(
+                        &node,
+                        &doc_state_path,
+                        &root,
+                        &previous_manifest,
+                        current_manifest.clone(),
+                    )
+                    .await?;
                     println!("root: {}", root.display());
                     println!("state dir: {}", state_dir.display());
                     println!("doc id: {}", result.doc_id);
@@ -1232,7 +1228,6 @@ async fn main() -> Result<()> {
                     println!("watch interval ms: {interval_ms}");
                     println!("press Ctrl+C to stop");
 
-                    let doc = node.open_doc(&result.doc_id).await?;
                     persist_manifest_state(&manifest_state_path, &current_manifest)?;
                     let mut published_manifest = current_manifest;
                     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1385,14 +1380,7 @@ async fn main() -> Result<()> {
                     let sync_state_path = state_dir.join("base-manifest.json");
                     let had_sync_state = sync_state_path.exists();
                     let mut base_manifest = if had_sync_state {
-                        serde_json::from_slice::<altair_vega::SyncManifest>(
-                            &std::fs::read(&sync_state_path).with_context(|| {
-                                format!("read follow state {}", sync_state_path.display())
-                            })?,
-                        )
-                        .with_context(|| {
-                            format!("deserialize follow state {}", sync_state_path.display())
-                        })?
+                        load_manifest_state(&sync_state_path, "follow base")?
                     } else {
                         scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
                             .with_context(|| {
@@ -1506,14 +1494,7 @@ async fn main() -> Result<()> {
                     let sync_state_path = state_dir.join("base-manifest.json");
                     let had_sync_state = sync_state_path.exists();
                     let mut base_manifest = if had_sync_state {
-                        serde_json::from_slice::<altair_vega::SyncManifest>(
-                            &std::fs::read(&sync_state_path).with_context(|| {
-                                format!("read join state {}", sync_state_path.display())
-                            })?,
-                        )
-                        .with_context(|| {
-                            format!("deserialize join state {}", sync_state_path.display())
-                        })?
+                        load_manifest_state(&sync_state_path, "join base")?
                     } else {
                         altair_vega::SyncManifest::default()
                     };
@@ -1582,22 +1563,22 @@ async fn main() -> Result<()> {
                             _ = tokio::signal::ctrl_c() => break,
                             maybe_remote = remote_events.next() => {
                                 if maybe_remote.is_none() {
+                                    println!("remote sync subscription ended; reconnecting");
+                                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                                    remote_events = Box::pin(imported.doc.subscribe().await?);
                                     continue;
                                 }
-                                let remote_manifest = node.read_doc_manifest(&imported.doc).await?;
-                                if !manifests_state_eq(&base_manifest, &remote_manifest) {
-                                    let plan = node
-                                        .apply_remote_manifest(imported.peer.clone(), &base_manifest, &local, &remote_manifest)
-                                        .await?;
-                                    if !plan.actions.is_empty() || !plan.conflicts.is_empty() {
-                                        print_sync_plan("applied remote", &plan);
-                                    }
-                                    persist_manifest_state(&sync_state_path, &remote_manifest)?;
-                                    base_manifest = remote_manifest;
-                                    if let Some(last) = &last_published_manifest
-                                        && manifests_state_eq(last, &base_manifest) {
-                                        last_published_manifest = None;
-                                    }
+                                if let Err(error) = reconcile_join_remote(
+                                    &node,
+                                    &imported.doc,
+                                    &imported.peer,
+                                    &local,
+                                    &sync_state_path,
+                                    &mut base_manifest,
+                                    &mut last_published_manifest,
+                                )
+                                .await {
+                                    println!("remote sync error: {error}");
                                 }
                             }
                             maybe_event = event_rx.recv() => {
@@ -1605,92 +1586,50 @@ async fn main() -> Result<()> {
                                     continue;
                                 }
                                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                                let current_local = scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                                    .with_context(|| format!("scan docs join local root {}", local.display()))?;
-                                let local_changes = diff_manifests(&base_manifest, &current_local);
-                                if !local_changes.is_empty() {
-                                    let proposed_manifest = altair_vega::with_tombstones(
-                                        &base_manifest,
-                                        &current_local,
-                                        altair_vega::unix_time_now_ms(),
-                                    );
-                                    let skip_publish = last_published_manifest
-                                        .as_ref()
-                                        .is_some_and(|last| manifests_state_eq(last, &proposed_manifest));
-                                    if !skip_publish {
-                                        match node.publish_manifest(&imported.doc, &local, &base_manifest, &current_local).await {
-                                            Ok((content_blobs, published_manifest)) => {
-                                                println!("published local changes: {} content blobs: {}", local_changes.len(), content_blobs);
-                                                for change in &local_changes {
-                                                    println!("local {:?} {}", change.kind, change.path);
-                                                }
-                                                last_published_manifest = Some(published_manifest);
-                                            }
-                                            Err(error) => {
-                                                println!("local publish error: {error}");
-                                            }
-                                        }
-                                    }
+                                if let Err(error) = reconcile_join_remote(
+                                    &node,
+                                    &imported.doc,
+                                    &imported.peer,
+                                    &local,
+                                    &sync_state_path,
+                                    &mut base_manifest,
+                                    &mut last_published_manifest,
+                                )
+                                .await {
+                                    println!("remote sync error: {error}");
+                                    continue;
                                 }
-                                let remote_manifest = node.read_doc_manifest(&imported.doc).await?;
-                                if !manifests_state_eq(&base_manifest, &remote_manifest) {
-                                    let plan = node
-                                        .apply_remote_manifest(imported.peer.clone(), &base_manifest, &local, &remote_manifest)
-                                        .await?;
-                                    if !plan.actions.is_empty() || !plan.conflicts.is_empty() {
-                                        print_sync_plan("applied remote", &plan);
-                                    }
-                                    persist_manifest_state(&sync_state_path, &remote_manifest)?;
-                                    base_manifest = remote_manifest;
-                                    if let Some(last) = &last_published_manifest
-                                        && manifests_state_eq(last, &base_manifest) {
-                                        last_published_manifest = None;
-                                    }
-                                }
+                                publish_join_local_changes(
+                                    &node,
+                                    &imported.doc,
+                                    &local,
+                                    &base_manifest,
+                                    &mut last_published_manifest,
+                                )
+                                .await?;
                             }
                             _ = interval.tick() => {
-                                let current_local = scan_directory(&local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
-                                    .with_context(|| format!("scan docs join local root {}", local.display()))?;
-                                let local_changes = diff_manifests(&base_manifest, &current_local);
-                                if !local_changes.is_empty() {
-                                    let proposed_manifest = altair_vega::with_tombstones(
-                                        &base_manifest,
-                                        &current_local,
-                                        altair_vega::unix_time_now_ms(),
-                                    );
-                                    let skip_publish = last_published_manifest
-                                        .as_ref()
-                                        .is_some_and(|last| manifests_state_eq(last, &proposed_manifest));
-                                    if !skip_publish {
-                                        match node.publish_manifest(&imported.doc, &local, &base_manifest, &current_local).await {
-                                            Ok((content_blobs, published_manifest)) => {
-                                                println!("published local changes: {} content blobs: {}", local_changes.len(), content_blobs);
-                                                for change in &local_changes {
-                                                    println!("local {:?} {}", change.kind, change.path);
-                                                }
-                                                last_published_manifest = Some(published_manifest);
-                                            }
-                                            Err(error) => {
-                                                println!("local publish error: {error}");
-                                            }
-                                        }
-                                    }
+                                if let Err(error) = reconcile_join_remote(
+                                    &node,
+                                    &imported.doc,
+                                    &imported.peer,
+                                    &local,
+                                    &sync_state_path,
+                                    &mut base_manifest,
+                                    &mut last_published_manifest,
+                                )
+                                .await {
+                                    println!("remote sync error: {error}");
+                                    continue;
                                 }
-                                let remote_manifest = node.read_doc_manifest(&imported.doc).await?;
-                                if !manifests_state_eq(&base_manifest, &remote_manifest) {
-                                    let plan = node
-                                        .apply_remote_manifest(imported.peer.clone(), &base_manifest, &local, &remote_manifest)
-                                        .await?;
-                                    if !plan.actions.is_empty() || !plan.conflicts.is_empty() {
-                                        print_sync_plan("applied remote", &plan);
-                                    }
-                                    persist_manifest_state(&sync_state_path, &remote_manifest)?;
-                                    base_manifest = remote_manifest;
-                                    if let Some(last) = &last_published_manifest
-                                        && manifests_state_eq(last, &base_manifest) {
-                                        last_published_manifest = None;
-                                    }
-                                }
+                                publish_join_local_changes(
+                                    &node,
+                                    &imported.doc,
+                                    &local,
+                                    &base_manifest,
+                                    &mut last_published_manifest,
+                                )
+                                .await?;
                             }
                         }
                     }
@@ -2202,9 +2141,9 @@ COMMANDS
         direct use without short-code rendezvous. With --naked and KEY, treat
         KEY as a raw iroh-docs ticket.
 
-        Each host process creates a fresh live docs ticket. Restarted hosts
-        print the current ticket; followers must use that ticket or saved pair
-        state from the current host run.
+        Hosts reuse their persistent docs document per folder/state directory and
+        refresh the live ticket for the current endpoint on restart. Short-code
+        followers receive the refreshed ticket through rendezvous.
 
 POSITIONALS
     FOLDER
@@ -3370,6 +3309,9 @@ fn print_sync_plan(label: &str, plan: &altair_vega::SyncMergePlan) {
     for action in &plan.actions {
         match action {
             altair_vega::SyncAction::UpsertFile { path, .. } => println!("Updated {path}"),
+            altair_vega::SyncAction::RenamePath {
+                from_path, to_path, ..
+            } => println!("Renamed {from_path} -> {to_path}"),
             altair_vega::SyncAction::DeletePath { path } => println!("Deleted {path}"),
             altair_vega::SyncAction::CreateConflictCopy { .. } => {}
         }
@@ -3413,37 +3355,34 @@ async fn run_sync_host(
         "host-{}-last-published-manifest.json",
         state_key(&root.display().to_string())
     ));
+    let doc_state_path = host_doc_state_path(&state_dir, &root);
     let previous_manifest = if manifest_state_path.exists() {
-        serde_json::from_slice::<altair_vega::SyncManifest>(
-            &std::fs::read(&manifest_state_path).with_context(|| {
-                format!("read manifest state {}", manifest_state_path.display())
-            })?,
-        )
-        .with_context(|| {
-            format!(
-                "deserialize manifest state {}",
-                manifest_state_path.display()
-            )
-        })?
+        load_manifest_state(&manifest_state_path, "host publish")?
     } else {
         current_manifest.clone()
     };
-    let result = node
-        .export_manifest(&root, &previous_manifest, current_manifest.clone())
-        .await?;
+    let (doc, result) = export_host_manifest(
+        &node,
+        &doc_state_path,
+        &root,
+        &previous_manifest,
+        current_manifest.clone(),
+    )
+    .await?;
 
     if naked {
         save_docs_pair_state(&result.ticket, PairMode::Persistent)?;
         println!("root: {}", root.display());
         println!("state dir: {}", state_dir.display());
         print_share_value("ticket", &result.ticket, qr)?;
-        println!("note: sync host creates a fresh live docs ticket for each run");
+        println!(
+            "note: sync host reuses its docs document and refreshes the live ticket on restart"
+        );
         println!("entries: {}", result.manifest.len());
         println!("content blobs: {}", result.content_blobs);
         println!("watch interval ms: {interval_ms}");
         println!("press Ctrl+C to stop");
 
-        let doc = node.open_doc(&result.doc_id).await?;
         persist_manifest_state(&manifest_state_path, &current_manifest)?;
         let mut published_manifest = current_manifest;
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3455,15 +3394,32 @@ async fn run_sync_host(
             .watch(&root, RecursiveMode::Recursive)
             .with_context(|| format!("watch naked sync host root {}", root.display()))?;
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+        let host_peer = first_doc_ticket_peer(&result.ticket)?;
+        let mut remote_events = Box::pin(doc.subscribe().await?);
 
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break,
+                maybe_remote = remote_events.next() => {
+                    if maybe_remote.is_none() {
+                        println!("remote sync subscription ended; reconnecting");
+                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                        remote_events = Box::pin(doc.subscribe().await?);
+                        continue;
+                    }
+                    if let Err(error) = reconcile_host_remote(&node, &doc, &host_peer, &root, &manifest_state_path, &mut published_manifest).await {
+                        println!("remote sync error: {error}");
+                    }
+                }
                 maybe_event = event_rx.recv() => {
                     if let Some(Ok(event)) = maybe_event && matches!(event.kind, EventKind::Access(_)) {
                         continue;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    if let Err(error) = reconcile_host_remote(&node, &doc, &host_peer, &root, &manifest_state_path, &mut published_manifest).await {
+                        println!("remote sync error: {error}");
+                        continue;
+                    }
                     let current = scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
                         .with_context(|| format!("rescan naked sync host root {}", root.display()))?;
                     let changes = diff_manifests(&published_manifest, &current);
@@ -3483,6 +3439,10 @@ async fn run_sync_host(
                     }
                 }
                 _ = interval.tick() => {
+                    if let Err(error) = reconcile_host_remote(&node, &doc, &host_peer, &root, &manifest_state_path, &mut published_manifest).await {
+                        println!("remote sync error: {error}");
+                        continue;
+                    }
                     let current = scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
                         .with_context(|| format!("rescan naked sync host root {}", root.display()))?;
                     let changes = diff_manifests(&published_manifest, &current);
@@ -3530,13 +3490,12 @@ async fn run_sync_host(
     }
     print_share_value("code", &code.to_string(), qr && !naked)?;
     println!("rendezvous: {room_url}");
-    println!("note: sync host creates a fresh live docs ticket for each run");
+    println!("note: sync host reuses its docs document and refreshes the live ticket on restart");
     println!("entries: {}", result.manifest.len());
     println!("content blobs: {}", result.content_blobs);
     println!("watch interval ms: {interval_ms}");
     println!("press Ctrl+C to stop");
 
-    let doc = node.open_doc(&result.doc_id).await?;
     persist_manifest_state(&manifest_state_path, &current_manifest)?;
     let mut published_manifest = current_manifest;
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3548,10 +3507,23 @@ async fn run_sync_host(
         .watch(&root, RecursiveMode::Recursive)
         .with_context(|| format!("watch sync host root {}", root.display()))?;
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+    let host_peer = first_doc_ticket_peer(&result.ticket)?;
+    let mut remote_events = Box::pin(doc.subscribe().await?);
 
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            maybe_remote = remote_events.next() => {
+                if maybe_remote.is_none() {
+                    println!("remote sync subscription ended; reconnecting");
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    remote_events = Box::pin(doc.subscribe().await?);
+                    continue;
+                }
+                if let Err(error) = reconcile_host_remote(&node, &doc, &host_peer, &root, &manifest_state_path, &mut published_manifest).await {
+                    println!("remote sync error: {error}");
+                }
+            }
             maybe_room = room_read.next() => {
                 let Some(message) = maybe_room else {
                     continue;
@@ -3580,6 +3552,10 @@ async fn run_sync_host(
                     continue;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                if let Err(error) = reconcile_host_remote(&node, &doc, &host_peer, &root, &manifest_state_path, &mut published_manifest).await {
+                    println!("remote sync error: {error}");
+                    continue;
+                }
                 let current = scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
                     .with_context(|| format!("rescan sync host root {}", root.display()))?;
                 let changes = diff_manifests(&published_manifest, &current);
@@ -3599,6 +3575,10 @@ async fn run_sync_host(
                 }
             }
             _ = interval.tick() => {
+                if let Err(error) = reconcile_host_remote(&node, &doc, &host_peer, &root, &manifest_state_path, &mut published_manifest).await {
+                    println!("remote sync error: {error}");
+                    continue;
+                }
                 let current = scan_directory(&root, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
                     .with_context(|| format!("rescan sync host root {}", root.display()))?;
                 let changes = diff_manifests(&published_manifest, &current);
@@ -3727,11 +3707,222 @@ fn persist_manifest_state(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create manifest state parent {}", parent.display()))?;
     }
+    let tmp = path.with_extension("json.altair-tmp");
     std::fs::write(
-        path,
+        &tmp,
         serde_json::to_vec_pretty(manifest).context("serialize published manifest state")?,
     )
-    .with_context(|| format!("write manifest state {}", path.display()))?;
+    .with_context(|| format!("write manifest state temp file {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("finalize manifest state {}", path.display()))?;
+    Ok(())
+}
+
+fn host_doc_state_path(state_dir: &std::path::Path, root: &std::path::Path) -> PathBuf {
+    state_dir.join(format!(
+        "host-{}-doc-id.txt",
+        state_key(&root.display().to_string())
+    ))
+}
+
+async fn export_host_manifest(
+    node: &sync_docs::DocsSyncNode,
+    doc_state_path: &std::path::Path,
+    root: &std::path::Path,
+    previous_manifest: &altair_vega::SyncManifest,
+    current_manifest: altair_vega::SyncManifest,
+) -> Result<(iroh_docs::api::Doc, sync_docs::DocsExportResult)> {
+    if doc_state_path.exists() {
+        let doc_id = std::fs::read_to_string(doc_state_path)
+            .with_context(|| format!("read host docs document id {}", doc_state_path.display()))?;
+        let doc = match node.open_doc(doc_id.trim()).await {
+            Ok(doc) => doc,
+            Err(open_error) => {
+                let ticket_path = host_ticket_state_path(doc_state_path);
+                let ticket = std::fs::read_to_string(&ticket_path).with_context(|| {
+                    format!(
+                        "open host docs document recorded in {} failed ({open_error}); read recovery ticket {}",
+                        doc_state_path.display(),
+                        ticket_path.display()
+                    )
+                })?;
+                node.import_ticket_namespace(ticket.trim()).await.with_context(|| {
+                    format!(
+                        "recover host docs namespace from {}; move {} aside to create a fresh sync document",
+                        ticket_path.display(),
+                        doc_state_path.display()
+                    )
+                })?
+            }
+        };
+        let result = node
+            .export_existing_manifest(&doc, root, previous_manifest, current_manifest)
+            .await?;
+        persist_host_ticket(&host_ticket_state_path(doc_state_path), &result.ticket)?;
+        Ok((doc, result))
+    } else {
+        let result = node
+            .export_manifest(root, previous_manifest, current_manifest)
+            .await?;
+        persist_host_doc_id(doc_state_path, &result.doc_id)?;
+        persist_host_ticket(&host_ticket_state_path(doc_state_path), &result.ticket)?;
+        let doc = node.open_doc(&result.doc_id).await?;
+        Ok((doc, result))
+    }
+}
+
+fn host_ticket_state_path(doc_state_path: &std::path::Path) -> PathBuf {
+    doc_state_path.with_extension("ticket.txt")
+}
+
+fn persist_host_ticket(path: &std::path::Path, ticket: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create host docs ticket parent {}", parent.display()))?;
+    }
+    std::fs::write(path, ticket)
+        .with_context(|| format!("write host docs ticket {}", path.display()))
+}
+
+fn first_doc_ticket_peer(ticket: &str) -> Result<iroh::EndpointAddr> {
+    let ticket = iroh_docs::DocTicket::from_str(ticket).context("parse docs ticket")?;
+    ticket
+        .nodes
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("docs ticket did not include any peers"))
+}
+
+fn persist_host_doc_id(path: &std::path::Path, doc_id: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create host docs document id parent {}", parent.display()))?;
+    }
+    std::fs::write(path, doc_id)
+        .with_context(|| format!("write host docs document id {}", path.display()))
+}
+
+fn load_manifest_state(path: &std::path::Path, label: &str) -> Result<altair_vega::SyncManifest> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("read {label} manifest state {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "deserialize {label} manifest state {}; the state file may be corrupted or from an incompatible version. Move this file aside to force a fresh sync base.",
+            path.display()
+        )
+    })
+}
+
+async fn reconcile_host_remote(
+    node: &sync_docs::DocsSyncNode,
+    doc: &iroh_docs::api::Doc,
+    fallback_peer: &iroh::EndpointAddr,
+    root: &std::path::Path,
+    manifest_state_path: &std::path::Path,
+    published_manifest: &mut altair_vega::SyncManifest,
+) -> Result<()> {
+    let remote_manifest = node.read_doc_manifest(doc).await?;
+    if manifests_state_eq(published_manifest, &remote_manifest) {
+        return Ok(());
+    }
+
+    let mut peer = fallback_peer.clone();
+    for ticket in node.read_peer_tickets(doc).await.unwrap_or_default() {
+        let Ok(candidate) = first_doc_ticket_peer(&ticket) else {
+            continue;
+        };
+        if candidate != *fallback_peer {
+            peer = candidate;
+            break;
+        }
+    }
+
+    let plan = node
+        .apply_remote_manifest(peer, published_manifest, root, &remote_manifest)
+        .await?;
+    if !plan.actions.is_empty() || !plan.conflicts.is_empty() {
+        print_sync_plan("applied remote", &plan);
+    }
+    persist_manifest_state(manifest_state_path, &remote_manifest)?;
+    *published_manifest = remote_manifest;
+    Ok(())
+}
+
+async fn reconcile_join_remote(
+    node: &sync_docs::DocsSyncNode,
+    doc: &iroh_docs::api::Doc,
+    peer: &iroh::EndpointAddr,
+    local: &std::path::Path,
+    sync_state_path: &std::path::Path,
+    base_manifest: &mut altair_vega::SyncManifest,
+    last_published_manifest: &mut Option<altair_vega::SyncManifest>,
+) -> Result<()> {
+    let remote_manifest = node.read_doc_manifest(doc).await?;
+    if manifests_state_eq(base_manifest, &remote_manifest) {
+        return Ok(());
+    }
+
+    let plan = node
+        .apply_remote_manifest(peer.clone(), base_manifest, local, &remote_manifest)
+        .await?;
+    if !plan.actions.is_empty() || !plan.conflicts.is_empty() {
+        print_sync_plan("applied remote", &plan);
+    }
+    persist_manifest_state(sync_state_path, &remote_manifest)?;
+    *base_manifest = remote_manifest;
+    if let Some(last) = last_published_manifest
+        && manifests_state_eq(last, base_manifest)
+    {
+        *last_published_manifest = None;
+    }
+    Ok(())
+}
+
+async fn publish_join_local_changes(
+    node: &sync_docs::DocsSyncNode,
+    doc: &iroh_docs::api::Doc,
+    local: &std::path::Path,
+    base_manifest: &altair_vega::SyncManifest,
+    last_published_manifest: &mut Option<altair_vega::SyncManifest>,
+) -> Result<()> {
+    let current_local = scan_directory(local, altair_vega::DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+        .with_context(|| format!("scan docs join local root {}", local.display()))?;
+    let local_changes = diff_manifests(base_manifest, &current_local);
+    if local_changes.is_empty() {
+        return Ok(());
+    }
+
+    let proposed_manifest = altair_vega::with_tombstones(
+        base_manifest,
+        &current_local,
+        altair_vega::unix_time_now_ms(),
+    );
+    let skip_publish = last_published_manifest
+        .as_ref()
+        .is_some_and(|last| manifests_state_eq(last, &proposed_manifest));
+    if skip_publish {
+        return Ok(());
+    }
+
+    match node
+        .publish_manifest(doc, local, base_manifest, &current_local)
+        .await
+    {
+        Ok((content_blobs, published_manifest)) => {
+            println!(
+                "published local changes: {} content blobs: {}",
+                local_changes.len(),
+                content_blobs
+            );
+            for change in &local_changes {
+                println!("local {:?} {}", change.kind, change.path);
+            }
+            *last_published_manifest = Some(published_manifest);
+        }
+        Err(error) => {
+            println!("local publish error: {error}");
+        }
+    }
     Ok(())
 }
 

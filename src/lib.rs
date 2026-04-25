@@ -46,8 +46,9 @@ pub use runtime::{
 pub use sync::{
     DEFAULT_SYNC_CHUNK_SIZE_BYTES, SyncAction, SyncChange, SyncChangeKind, SyncConflict,
     SyncConflictResolution, SyncEntry, SyncEntryState, SyncManifest, SyncMergePlan,
-    apply_merge_plan, diff_manifests, manifests_state_eq, merge_manifests, scan_directory,
-    unix_time_now_ms, with_tombstones,
+    apply_merge_plan, conflict_copy_path, diff_manifests, join_sync_path, manifests_state_eq,
+    merge_manifests, scan_directory, sync_apply_target_path, sync_temp_path, unix_time_now_ms,
+    with_tombstones,
 };
 
 pub const PROTOCOL_NAME: &str = "altair-vega";

@@ -10,7 +10,7 @@ use altair_vega::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
 use iroh::{
     Endpoint,
@@ -53,7 +53,10 @@ const RENDEZVOUS_CLOSE_ROOM_EXPIRED: u16 = 4000;
 
 #[derive(Debug, Parser)]
 #[command(name = "altair-vega")]
-#[command(about = "Peer-to-peer transfer and folder sync over short pairing codes")]
+#[command(version)]
+#[command(
+    about = "Peer-to-peer transfer and folder sync over short pairing codes. Use 'altair-vega help [TOPIC]' for the full manual."
+)]
 #[command(disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
@@ -101,7 +104,7 @@ enum Command {
     Help {
         #[arg(long)]
         no_pager: bool,
-        #[arg(value_name = "TOPIC", num_args = 0.., trailing_var_arg = true)]
+        #[arg(value_name = "TOPIC", num_args = 0.., trailing_var_arg = true, help = "Manual topic to open, such as pair, transfer, sync, serve, runtime, or examples")]
         topic: Vec<String>,
     },
     #[command(hide = true)]
@@ -147,8 +150,8 @@ struct SyncArgs {
     #[arg(help = "Folder to publish or receive synced files")]
     folder: Option<PathBuf>,
     #[arg(
-        value_name = "KEY",
-        help = "Optional short code or docs ticket with --naked"
+        value_name = "CODE",
+        help = "Optional short code, or a raw docs ticket when used with --naked"
     )]
     key: Option<String>,
     #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL, help = "Rendezvous room URL for short-code sync")]
@@ -190,32 +193,40 @@ struct SyncArgs {
 enum SendCommand {
     #[command(about = "Send one text message to a native receiver")]
     Text {
+        #[arg(help = "Text message to send")]
         message: String,
-        #[arg(value_name = "CODE")]
+        #[arg(
+            value_name = "CODE",
+            help = "Short code to join, or omit to generate one"
+        )]
         code: Option<String>,
-        #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL)]
+        #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL, help = "Rendezvous room URL for short-code pairing")]
         room_url: String,
-        #[arg(long, value_enum, default_value_t = PairMode::OneOff)]
+        #[arg(long, value_enum, default_value_t = PairMode::OneOff, help = "Pairing lifetime")]
         pair_mode: PairMode,
-        #[arg(long)]
+        #[arg(long, help = "Bypass rendezvous and send to a raw endpoint ticket")]
         naked: bool,
-        #[arg(long)]
+        #[arg(long, help = "Render the printed code as a terminal QR code")]
         qr: bool,
     },
     #[command(about = "Send one file to a native receiver")]
     File {
+        #[arg(help = "File path to send")]
         path: PathBuf,
-        #[arg(value_name = "CODE")]
+        #[arg(
+            value_name = "CODE",
+            help = "Short code to join, or omit to generate one"
+        )]
         code: Option<String>,
-        #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL)]
+        #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL, help = "Rendezvous room URL for short-code pairing")]
         room_url: String,
-        #[arg(long, value_enum, default_value_t = PairMode::OneOff)]
+        #[arg(long, value_enum, default_value_t = PairMode::OneOff, help = "Pairing lifetime")]
         pair_mode: PairMode,
-        #[arg(long)]
+        #[arg(long, help = "Bypass rendezvous and expose a raw file ticket")]
         naked: bool,
-        #[arg(long)]
+        #[arg(long, help = "Render the printed code or ticket as a terminal QR code")]
         qr: bool,
-        #[arg(long)]
+        #[arg(long, help = "Directory for resumable send state")]
         state_dir: Option<PathBuf>,
     },
 }
@@ -224,45 +235,60 @@ enum SendCommand {
 enum ReceiveCommand {
     #[command(about = "Receive one text message from a native sender")]
     Text {
+        #[arg(
+            value_name = "CODE",
+            help = "Short code to wait on, or omit to use saved pair state"
+        )]
         code: Option<String>,
-        #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL)]
+        #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL, help = "Rendezvous room URL for short-code pairing")]
         room_url: String,
-        #[arg(long, value_enum, default_value_t = PairMode::OneOff)]
+        #[arg(long, value_enum, default_value_t = PairMode::OneOff, help = "Pairing lifetime")]
         pair_mode: PairMode,
-        #[arg(long)]
+        #[arg(long, help = "Bypass rendezvous and print a raw endpoint ticket")]
         naked: bool,
-        #[arg(long)]
+        #[arg(long, help = "Render the printed ticket as a terminal QR code")]
         qr: bool,
     },
     #[command(about = "Receive one file from a native sender")]
     File {
+        #[arg(
+            value_name = "CODE",
+            help = "Short code to wait on, or omit to use saved pair state"
+        )]
         code: Option<String>,
-        #[arg(long, default_value = "received-files")]
+        #[arg(
+            long,
+            default_value = "received-files",
+            help = "Directory for received files"
+        )]
         output_dir: PathBuf,
-        #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL)]
+        #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL, help = "Rendezvous room URL for short-code pairing")]
         room_url: String,
-        #[arg(long, value_enum, default_value_t = PairMode::OneOff)]
+        #[arg(long, value_enum, default_value_t = PairMode::OneOff, help = "Pairing lifetime")]
         pair_mode: PairMode,
-        #[arg(long)]
+        #[arg(long, help = "Bypass rendezvous and receive from a raw file ticket")]
         naked: bool,
-        #[arg(long)]
+        #[arg(long, help = "Directory for resumable receive state")]
         state_dir: Option<PathBuf>,
     },
 }
 
 #[derive(Debug, Args)]
 struct PairArgs {
-    #[arg(value_name = "CODE", num_args = 0.., trailing_var_arg = true)]
+    #[arg(value_name = "CODE", num_args = 0.., trailing_var_arg = true, help = "Short code to join, or omit to host a new session. Accepts one dash-separated code or four space-separated parts")]
     code: Vec<String>,
-    #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL)]
+    #[arg(long, default_value = DEFAULT_RENDEZVOUS_URL, help = "Rendezvous room URL for short-code pairing")]
     room_url: String,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Pairing lifetime")]
     mode: Option<PairMode>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Bypass rendezvous and print or consume a raw endpoint ticket"
+    )]
     naked: bool,
-    #[arg(long)]
+    #[arg(long, help = "Render the printed code or ticket as a terminal QR code")]
     qr: bool,
-    #[arg(long)]
+    #[arg(long, help = "Normalize and inspect a short code without pairing")]
     inspect: bool,
 }
 
@@ -757,6 +783,21 @@ impl From<PeerKindArg> for MessagingPeerKind {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = std::env::args_os().collect::<Vec<_>>();
+    if args.len() == 1 {
+        Cli::command().print_help()?;
+        println!();
+        return Ok(());
+    }
+    if args.len() == 2 && args[1] == "sync" {
+        let mut command = Cli::command();
+        if let Some(sync) = command.find_subcommand_mut("sync") {
+            sync.print_help()?;
+            println!();
+            return Ok(());
+        }
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -1874,7 +1915,7 @@ fn resolve_sync_input(input: Option<String>, naked: bool) -> Result<SyncInput> {
 fn infer_sync_command(args: SyncArgs) -> Result<SyncRoleCommand> {
     let folder = args
         .folder
-        .context("sync requires <FOLDER>, or use an explicit sync subcommand")?;
+        .context("sync requires <FOLDER>. Try: altair-vega sync --help")?;
     if args.join {
         return Ok(SyncRoleCommand::Join {
             folder,
@@ -2654,7 +2695,7 @@ async fn read_raw_control_frame(
 }
 
 async fn run_native_send_text(code: ShortCode, room_url: String, message: String) -> Result<()> {
-    println!("waiting for text receiver on code: {code}");
+    println!("waiting for text receiver");
     let peer =
         establish_native_control_peer(code, &room_url, "native-send-text", "Native Text Sender")
             .await?;
@@ -2670,12 +2711,13 @@ async fn run_native_send_text(code: ShortCode, room_url: String, message: String
     session.finish_sending()?;
     session.wait_for_send_completion().await?;
     peer.endpoint.close().await;
-    println!("sent text: {message}");
+    println!("message sent ({} chars)", message.chars().count());
     Ok(())
 }
 
 async fn run_native_receive_text(code: ShortCode, room_url: String) -> Result<()> {
-    println!("waiting for text sender on code: {code}");
+    println!("code: {code}");
+    println!("waiting for text sender");
     println!("leave this running, then run send text with the same code on the sender");
     let peer = establish_native_control_peer(
         code.clone(),
@@ -2706,6 +2748,7 @@ async fn run_native_receive_text(code: ShortCode, room_url: String) -> Result<()
         .receive_message()
         .await?
         .ok_or_else(|| anyhow::anyhow!("sender disconnected before sending text"))?;
+    println!("--- received message ---");
     println!("{}", message.body);
     session.finish_sending()?;
     session.wait_for_send_completion().await?;
@@ -2719,7 +2762,7 @@ async fn run_native_send_file(
     path: PathBuf,
     state_dir: Option<PathBuf>,
 ) -> Result<()> {
-    println!("waiting for file receiver on code: {code}");
+    println!("waiting for file receiver");
     let peer =
         establish_native_control_peer(code, &room_url, "native-send-file", "Native File Sender")
             .await?;
@@ -2823,7 +2866,8 @@ async fn run_native_receive_file(
     output_dir: PathBuf,
     state_dir: Option<PathBuf>,
 ) -> Result<()> {
-    println!("waiting for file sender on code: {code}");
+    println!("code: {code}");
+    println!("waiting for file sender");
     println!("leave this running, then run send file with the same code on the sender");
     let peer = establish_native_control_peer(
         code.clone(),
@@ -2999,7 +3043,9 @@ async fn establish_native_control_peer(
         Err(error) if local_role.is_some() || local_control_target_role(peer_type).is_some() => {
             let message =
                 rendezvous_connect_error_message(&error).unwrap_or_else(|| error.to_string());
-            println!("rendezvous unavailable; continuing with local discovery only: {message}");
+            eprintln!(
+                "warning: rendezvous unavailable; continuing with local discovery only: {message}"
+            );
             None
         }
         Err(error) => {
@@ -3228,6 +3274,7 @@ async fn wait_for_local_control_peer_without_rendezvous(
     label: &str,
 ) -> Result<NativeControlPeer> {
     println!("waiting for native peer on local network");
+    println!("press Ctrl+C to stop");
     loop {
         let now = SystemTime::now();
         let ttl = Duration::from_secs(60);
@@ -3920,7 +3967,9 @@ async fn run_sync_host(
         Err(error) => {
             let message =
                 rendezvous_connect_error_message(&error).unwrap_or_else(|| error.to_string());
-            println!("rendezvous unavailable; continuing with local discovery only: {message}");
+            eprintln!(
+                "warning: rendezvous unavailable; continuing with local discovery only: {message}"
+            );
             (None, None)
         }
     };

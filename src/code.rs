@@ -12,7 +12,7 @@ const ENDINGS: [&str; 4] = ["dar", "len", "mor", "tun"];
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ShortCodeError {
-    #[error("short code must have one slot and exactly three words")]
+    #[error("short code must have one slot and exactly three words, e.g. 2048-badar-celen-votun")]
     InvalidTokenCount,
     #[error("slot must be a decimal number that fits in u16")]
     InvalidSlot,

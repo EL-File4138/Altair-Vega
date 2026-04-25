@@ -37,7 +37,7 @@ pub enum BrowserEvent {
     Ready { endpoint_id: String },
     ReceivedMessage { endpoint_id: String, body: String },
     SentMessage { endpoint_id: String, body: String },
-    ReceivedFile {
+    ReceivedFileCompleted {
         endpoint_id: String,
         transfer_id: u64,
         name: String,
@@ -50,6 +50,18 @@ pub enum BrowserEvent {
         transfer_id: u64,
         name: String,
         size_bytes: u64,
+    },
+    SentFileChunk {
+        endpoint_id: String,
+        transfer_id: u64,
+        chunk_index: u64,
+        name: String,
+        size_bytes: u64,
+        chunk_size_bytes: u32,
+        chunk_bytes: u32,
+        bytes_complete: u64,
+        hash_hex: String,
+        mime_type: String,
     },
     ReceivedFileChunk {
         endpoint_id: String,
@@ -206,6 +218,7 @@ impl BrowserNode {
             end: chunk_count(&descriptor),
         }]);
 
+        let mut bytes_complete = 0u64;
         for range in ranges {
             for chunk_index in range.start..range.end {
                 let (chunk, chunk_hash) = read_chunk(&bytes, &descriptor, chunk_index)?;
@@ -223,6 +236,23 @@ impl BrowserNode {
                 send.write_all(&chunk)
                     .await
                     .context("write file chunk payload")?;
+                bytes_complete += u64::from(chunk_len);
+                self.shared
+                    .event_sender
+                    .send(BrowserEvent::SentFileChunk {
+                        endpoint_id: endpoint_id.to_string(),
+                        transfer_id,
+                        chunk_index,
+                        name: name.clone(),
+                        size_bytes: descriptor.size_bytes,
+                        chunk_size_bytes: descriptor.chunk_size_bytes,
+                        chunk_bytes: chunk_len,
+                        bytes_complete,
+                        hash_hex: hex::encode(descriptor.hash),
+                        mime_type: header.mime_type.clone(),
+                    })
+                    .await
+                    .ok();
             }
         }
         send.finish().context("finish browser file send stream")?;
@@ -402,6 +432,20 @@ impl BrowserFileProtocol {
 
         send.write_all(b"ok").await.map_err(map_accept_error)?;
         send.finish()?;
+        if bytes_complete >= header.descriptor.size_bytes {
+            self.shared
+                .event_sender
+                .send(BrowserEvent::ReceivedFileCompleted {
+                    endpoint_id,
+                    transfer_id: header.transfer_id,
+                    name: header.descriptor.name,
+                    size_bytes: header.descriptor.size_bytes,
+                    hash_hex: hex::encode(header.descriptor.hash),
+                    mime_type: header.mime_type,
+                })
+                .await
+                .ok();
+        }
         connection.closed().await;
         Ok(())
     }

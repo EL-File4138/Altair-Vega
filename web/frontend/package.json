@@ -7,15 +7,17 @@
     "dev": "vite",
     "build": "tsc -b --force && vite build --base='./'",
     "preview": "vite preview",
-    "build:wasm": "wasm-pack build ../browser-wasm --dev --weak-refs --reference-types -t bundler -d pkg",
-    "build:wasm:release": "wasm-pack build ../browser-wasm --release --weak-refs --reference-types -t bundler -d pkg"
+    "build:wasm": "wasm-pack build ../browser-wasm --dev --weak-refs --reference-types -t bundler -d ../frontend/pkg",
+    "build:wasm:release": "wasm-pack build ../browser-wasm --release --weak-refs --reference-types -t bundler -d ../frontend/pkg"
   },
   "dependencies": {
-    "altair-vega-browser": "file:./pkg"
+    "altair-vega-browser": "file:./pkg",
+    "solid-js": "^1.9.12"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
     "vite": "^7.1.11",
+    "vite-plugin-solid": "^2.11.12",
     "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.5.0",
     "ws": "^8.18.3"

@@ -1,5 +1,8 @@
 declare module 'cloudflare:workers' {
-  export class DurableObject {}
+  export class DurableObject {
+    protected readonly ctx: DurableObjectState
+    constructor(ctx: DurableObjectState, env: unknown)
+  }
 }
 
 declare class WebSocketPair {
@@ -20,4 +23,14 @@ interface DurableObjectId {}
 
 interface DurableObjectStub<T = unknown> {
   fetch(request: Request): Promise<Response>
+}
+
+interface DurableObjectState {
+  acceptWebSocket(socket: WebSocket): void
+  getWebSockets(): WebSocket[]
+}
+
+interface WebSocket {
+  serializeAttachment(value: unknown): void
+  deserializeAttachment(): unknown
 }

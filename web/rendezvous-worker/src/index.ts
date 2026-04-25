@@ -22,6 +22,7 @@ type RoomSession = {
   connectedAt: number
   peerType?: string
   label?: string
+  limits?: RoomLimits
 }
 
 type RoomLimits = {
@@ -86,6 +87,20 @@ export class Room extends DurableObject {
   private readonly sessions = new Map<WebSocket, RoomSession>()
   private createdAt = Date.now()
 
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env)
+    for (const socket of this.ctx.getWebSockets()) {
+      const session = socket.deserializeAttachment()
+      if (isRoomSession(session)) {
+        this.sessions.set(socket, session)
+      }
+    }
+    const connectedAtValues = [...this.sessions.values()].map((session) => session.connectedAt)
+    if (connectedAtValues.length > 0) {
+      this.createdAt = Math.min(...connectedAtValues)
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     const endpointId = url.searchParams.get('endpointId')?.trim()
@@ -115,14 +130,16 @@ export class Room extends DurableObject {
 
     const pair = new WebSocketPair()
     const [client, server] = Object.values(pair)
-    server.accept()
 
     const session: RoomSession = {
       endpointId,
       connectedAt: Date.now(),
       peerType,
       label,
+      limits,
     }
+    this.ctx.acceptWebSocket(server)
+    server.serializeAttachment(session)
     const existingPeers: RoomPeerInfo[] = [...this.sessions.values()].map((peer) => ({
       endpointId: peer.endpointId,
       connectedAt: peer.connectedAt,
@@ -143,20 +160,22 @@ export class Room extends DurableObject {
       label,
     })
 
-    server.addEventListener('message', (event: MessageEvent<string | ArrayBuffer>) => {
-      this.onMessage(server, event.data, limits)
-    })
-    server.addEventListener('close', () => {
-      this.onClose(server)
-    })
-    server.addEventListener('error', () => {
-      this.onClose(server)
-    })
-
     return new Response(null, {
       status: 101,
       webSocket: client,
     })
+  }
+
+  webSocketMessage(socket: WebSocket, data: string | ArrayBuffer) {
+    this.onMessage(socket, data, this.sessions.get(socket)?.limits ?? DEFAULT_ROOM_LIMITS)
+  }
+
+  webSocketClose(socket: WebSocket) {
+    this.onClose(socket)
+  }
+
+  webSocketError(socket: WebSocket) {
+    this.onClose(socket)
   }
 
   private evictDuplicate(endpointId: string) {
@@ -262,6 +281,38 @@ export class Room extends DurableObject {
     this.sessions.clear()
     this.createdAt = Date.now()
   }
+}
+
+const DEFAULT_ROOM_LIMITS: RoomLimits = {
+  maxRoomAgeMs: DEFAULT_ROOM_TTL_SECONDS * 1000,
+  maxPeers: DEFAULT_MAX_ROOM_PEERS,
+  maxMessageBytes: DEFAULT_MAX_MESSAGE_BYTES,
+}
+
+function isRoomSession(value: unknown): value is RoomSession {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const session = value as Partial<RoomSession>
+  return (
+    typeof session.endpointId === 'string' &&
+    typeof session.connectedAt === 'number' &&
+    (session.peerType === undefined || typeof session.peerType === 'string') &&
+    (session.label === undefined || typeof session.label === 'string') &&
+    (session.limits === undefined || isRoomLimits(session.limits))
+  )
+}
+
+function isRoomLimits(value: unknown): value is RoomLimits {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const limits = value as Partial<RoomLimits>
+  return (
+    typeof limits.maxRoomAgeMs === 'number' &&
+    typeof limits.maxPeers === 'number' &&
+    typeof limits.maxMessageBytes === 'number'
+  )
 }
 
 function isTrustedOrigin(request: Request, allowedOriginsValue: string | undefined) {

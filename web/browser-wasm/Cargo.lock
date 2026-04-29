@@ -106,7 +106,6 @@ dependencies = [
  "console_error_panic_hook",
  "hex",
  "iroh",
- "iroh-tickets",
  "js-sys",
  "n0-future",
  "pkcs8",

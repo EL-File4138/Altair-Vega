@@ -1,4 +1,4 @@
-import { Link2, RefreshCcw } from 'lucide-solid'
+import { RefreshCcw } from 'lucide-solid'
 import { createEffect, createSignal, onCleanup } from 'solid-js'
 
 import { state } from '../lib/state'
@@ -6,26 +6,19 @@ import { cx } from '../lib/cx'
 import { Button } from './ui/Button'
 
 type ConnectionStatusProps = {
-  onConnect: () => void
   onDisconnect: () => void
   onReconnect: () => void
 }
 
-const connectionStatusBaseClass = 'flex min-h-[26px] max-w-[min(60vw,260px)] select-none items-center gap-[6px]'
+const connectionStatusBaseClass = 'flex min-h-7 max-w-[min(60vw,260px)] select-none items-center gap-[6px]'
 const connectionStatusInteractiveClass = 'group'
 const statusButtonBaseClass = [
-  'inline-flex min-h-[26px] shrink-0 items-center justify-center gap-[5px]',
-  'border rounded-[var(--radius-full)] px-[7px] py-[3px]',
-  'text-[length:0.7rem] font-650 leading-[var(--leading-tight)] whitespace-nowrap',
+  'inline-flex h-7 min-h-7 shrink-0 items-center justify-center gap-[6px]',
+  'border rounded-[var(--radius-full)] px-[9px] py-0',
+  'text-[length:0.72rem] font-650 leading-none whitespace-nowrap',
   'transition-all duration-[var(--duration-normal)] ease-[var(--ease-out)]',
-  'disabled:cursor-not-allowed disabled:opacity-55',
+  'disabled:cursor-default disabled:opacity-100',
   '[&_svg]:h-[13px] [&_svg]:w-[13px] [&_svg]:shrink-0',
-].join(' ')
-const statusConnectClass = [
-  'border-[color-mix(in_srgb,var(--color-primary)_18%,transparent)]',
-  'bg-[var(--color-primary-subtle)] text-[var(--color-primary)]',
-  'not-disabled:hover:bg-[var(--color-primary)] not-disabled:hover:text-[var(--color-primary-text)]',
-  'not-disabled:hover:shadow-[0_8px_24px_color-mix(in_srgb,var(--color-primary)_20%,transparent)]',
 ].join(' ')
 const statusDisconnectedClass = [
   'border-[color-mix(in_srgb,var(--color-danger)_26%,transparent)]',
@@ -38,14 +31,13 @@ const statusDisconnectedLockedClass = [
   'border-[color-mix(in_srgb,var(--color-danger)_26%,transparent)]',
   'bg-[var(--color-danger-subtle)] text-[var(--color-danger)]',
 ].join(' ')
-const statusDividerClass = 'h-[12px] w-px bg-current opacity-22'
 const connectedActionsClass = [
   'grid max-w-0 grid-cols-[auto] overflow-hidden opacity-0 translate-x-[-4px]',
   'transition-all duration-[var(--duration-normal)] ease-[var(--ease-out)]',
   'pointer-events-none group-hover:max-w-[124px] group-hover:opacity-100 group-hover:translate-x-0 group-hover:pointer-events-auto',
   'group-focus-within:max-w-[124px] group-focus-within:opacity-100 group-focus-within:translate-x-0 group-focus-within:pointer-events-auto',
 ].join(' ')
-const reconnectButtonClass = '!min-h-[26px] !rounded-[var(--radius-full)] px-[var(--space-2)] py-[3px] text-[length:0.7rem] [&_svg]:!h-[13px] [&_svg]:!w-[13px]'
+const reconnectButtonClass = '!min-h-7 !h-7 !rounded-[var(--radius-full)] px-[var(--space-2)] py-0 text-[length:0.72rem] leading-none [&_svg]:!h-[13px] [&_svg]:!w-[13px]'
 const pillNeutralClass = 'bg-[var(--color-secondary-subtle)] text-[var(--color-secondary)]'
 const pillSuccessClass = 'bg-[var(--color-success-subtle)] text-[var(--color-success)]'
 const pillWarningClass = 'bg-[var(--color-warning-subtle)] text-[var(--color-warning)]'
@@ -72,13 +64,12 @@ const pillBusyClass = [
   'border-[color-mix(in_srgb,var(--color-secondary)_18%,transparent)]',
   pillNeutralClass,
 ].join(' ')
-const statusDotClass = 'inline-block h-[6px] w-[6px] shrink-0 rounded-[var(--radius-full)]'
+const statusDotClass = 'inline-block h-[6px] w-[6px] shrink-0 rounded-[var(--radius-full)] shadow-[0_0_0_3px_color-mix(in_srgb,currentColor_10%,transparent)]'
 const statusDotNeutralClass = 'bg-[var(--color-secondary)]'
 const statusDotSuccessClass = 'bg-[var(--color-success)]'
 const statusDotWarningClass = 'bg-[var(--color-warning)]'
 const statusDotDangerClass = 'bg-[var(--color-danger)]'
 const statusDotPulseClass = 'animate-[pulse_2s_ease-in-out_infinite]'
-const statusConfirmationClass = 'disabled:!cursor-default disabled:!opacity-100'
 const CONNECTED_CONFIRMATION_MS = 2400
 const DISCONNECTED_CONFIRMATION_MS = 2400
 
@@ -86,11 +77,11 @@ const CONNECTION_STATUS_META = {
   starting: {
     label: 'Starting...',
     pillClass: pillBusyClass,
-    dotClass: statusDotNeutralClass,
+    dotClass: cx(statusDotNeutralClass, statusDotPulseClass),
   },
   ready: {
     label: 'Ready',
-    pillClass: statusConnectClass,
+    pillClass: pillBusyClass,
     dotClass: statusDotNeutralClass,
   },
   connecting: {
@@ -119,7 +110,7 @@ const CONNECTION_STATUS_META = {
     dotClass: statusDotDangerClass,
   },
   error: {
-    label: 'Error',
+    label: 'Unavailable',
     pillClass: cx('border-[color-mix(in_srgb,var(--color-danger)_24%,transparent)]', pillDangerClass),
     dotClass: statusDotDangerClass,
   },
@@ -149,19 +140,11 @@ export default function ConnectionStatus(props: ConnectionStatusProps) {
   const isConnected = () => state.connectionState === 'connected' || state.connectionState === 'fallback'
   const isBusy = () => state.connectionState === 'starting' || state.connectionState === 'connecting' || state.connectionState === 'reconnecting'
   const isDisconnected = () => state.connectionState === 'disconnected'
-  const isReady = () => state.connectionState === 'ready'
   const isConfirmingConnected = () => state.connectionState === 'connected' && confirmingConnected()
   const isConfirmingDisconnected = () => state.connectionState === 'disconnected' && confirmingDisconnected()
   const isConnectedInteractive = () => isConnected() && !isConfirmingConnected()
-  const isDisconnectedInteractive = () => isDisconnected() && !isConfirmingDisconnected() && canConnect()
-  const canConnect = () => Boolean(state.node) && !isBusy()
-
-  const handleConnect = () => {
-    props.onConnect()
-    if (state.connectionState === 'connecting' || state.connectionState === 'connected') {
-      setPendingUserConnect(true)
-    }
-  }
+  const isDisconnectedInteractive = () => isDisconnected() && !isConfirmingDisconnected() && canReconnect()
+  const canReconnect = () => Boolean(state.node && state.roomCode) && !isBusy()
 
   const handleDisconnect = () => {
     props.onDisconnect()
@@ -169,10 +152,9 @@ export default function ConnectionStatus(props: ConnectionStatusProps) {
   }
 
   const handleReconnect = () => {
+    if (!canReconnect()) return
     props.onReconnect()
-    if (state.connectionState === 'connecting' || state.connectionState === 'reconnecting' || state.connectionState === 'connected') {
-      setPendingUserConnect(true)
-    }
+    setPendingUserConnect(true)
   }
 
   createEffect(() => {
@@ -229,7 +211,6 @@ export default function ConnectionStatus(props: ConnectionStatusProps) {
             class={cx(
               statusButtonBaseClass,
               isConfirmingConnected() ? pillConnectedLockedClass : meta().pillClass,
-              isConfirmingConnected() && statusConfirmationClass,
             )}
             disabled={isConfirmingConnected()}
             onClick={handleDisconnect}
@@ -259,39 +240,21 @@ export default function ConnectionStatus(props: ConnectionStatusProps) {
             </div>
           )}
         </>
-      ) : isReady() ? (
-        <button
-          type="button"
-          class={cx(statusButtonBaseClass, statusConnectClass)}
-          disabled={!canConnect()}
-          onClick={handleConnect}
-        >
-          <Link2 size={13} />
-          <span>Connect</span>
-        </button>
-      ) : (
+      ) : isDisconnected() ? (
         <button
           type="button"
           class={cx(
             statusButtonBaseClass,
             isConfirmingDisconnected() ? statusDisconnectedLockedClass : meta().pillClass,
             isDisconnectedInteractive() && 'group',
-            isConfirmingDisconnected() && statusConfirmationClass,
           )}
-          disabled={!canConnect() || isConfirmingDisconnected()}
-          onClick={isDisconnected() ? handleReconnect : handleConnect}
+          disabled={!canReconnect() || isConfirmingDisconnected()}
+          onClick={handleReconnect}
         >
           <span class={cx(isDisconnectedInteractive() && 'group-hover:hidden group-focus-within:hidden')}>
             <span class={cx(statusDotClass, meta().dotClass)} aria-hidden="true" />
           </span>
           <span class={cx(isDisconnectedInteractive() && 'group-hover:hidden group-focus-within:hidden')}>{meta().label}</span>
-          {!isBusy() && !isDisconnected() && (
-            <>
-              <span class={statusDividerClass} aria-hidden="true" />
-              <Link2 size={14} />
-              <span>Connect</span>
-            </>
-          )}
           {isDisconnectedInteractive() && (
             <span class="hidden items-center gap-[5px] group-hover:inline-flex group-focus-within:inline-flex">
               <RefreshCcw size={13} />
@@ -299,6 +262,11 @@ export default function ConnectionStatus(props: ConnectionStatusProps) {
             </span>
           )}
         </button>
+      ) : (
+        <span class={cx(statusButtonBaseClass, meta().pillClass)}>
+          <span class={cx(statusDotClass, meta().dotClass)} aria-hidden="true" />
+          <span>{meta().label}</span>
+        </span>
       )}
     </div>
   )

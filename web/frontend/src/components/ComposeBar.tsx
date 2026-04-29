@@ -26,7 +26,7 @@ const composeBarButtonClass = [
 const composeBarInputWrapClass = [
   'flex min-h-10 min-w-0 flex-col justify-center gap-[var(--space-2)]',
   'border border-[color-mix(in_srgb,var(--color-border)_72%,var(--color-primary))]',
-  'rounded-[var(--radius-module)] bg-[color-mix(in_srgb,var(--color-bg-inset)_66%,var(--color-surface))]',
+  'rounded-[calc(var(--radius-lg)-4px)] bg-[color-mix(in_srgb,var(--color-bg-inset)_66%,var(--color-surface))]',
   'px-[var(--space-3)] py-[7px]',
   'shadow-[inset_0_1px_0_color-mix(in_srgb,var(--color-surface-raised)_48%,transparent)]',
   'focus-within:border-[var(--color-accent)] focus-within:shadow-[0_0_0_3px_var(--color-accent-subtle)]',

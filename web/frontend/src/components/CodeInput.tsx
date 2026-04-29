@@ -1,8 +1,8 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
+import { Check, Copy, Link, Loader2, RefreshCcw } from 'lucide-solid'
+import { For, Show, createSignal, onCleanup, type JSX } from 'solid-js'
 import { normalize_short_code } from 'altair-vega-browser'
-import { Check, Copy, RefreshCcw } from 'lucide-solid'
 
-import { addToast } from '../lib/state'
+import { state } from '../lib/state'
 import { cx } from '../lib/cx'
 import { Button, IconButton } from './ui/Button'
 import { Card } from './ui/Card'
@@ -10,114 +10,95 @@ import { Card } from './ui/Card'
 type CodeInputProps = {
   code: string
   onCodeChange: (code: string) => void
+  onSubmit: (code: string) => void
   onGenerate: () => void
 }
 
-type SegmentIndex = 0 | 1 | 2 | 3
-
-const EMPTY_SEGMENTS = ['', '', '', '']
-const SEGMENT_PLACEHOLDERS = ['0000', 'word', 'word', 'word']
-const SEGMENT_INDEXES: SegmentIndex[] = [0, 1, 2, 3]
-
-const codeInputClass = 'flex shrink-0 select-none flex-col gap-[var(--space-2)] px-[var(--space-3)] pb-[var(--space-3)] pt-[var(--space-2)]'
-const codeInputHeaderClass = 'flex min-h-7 items-center justify-between gap-[var(--space-2)]'
-const codeInputLabelClass = 'text-[var(--color-text-secondary)] text-[length:var(--text-sm)] font-600 leading-[var(--leading-tight)]'
-const codeInputNewClass = [
+const connectionClass = 'flex shrink-0 select-none flex-col gap-[var(--space-2)] px-[var(--space-3)] pb-[var(--space-3)] pt-[var(--space-2)]'
+const connectionHeaderClass = 'flex min-h-7 items-center justify-between gap-[var(--space-2)]'
+const connectionLabelClass = 'text-[var(--color-text-secondary)] text-[length:var(--text-sm)] font-600 leading-[var(--leading-tight)]'
+const connectionNewClass = [
   '!min-h-[24px] rounded-[var(--radius-full)] px-[7px] py-[2px]',
   'text-[length:0.72rem] leading-[var(--leading-tight)] [&_svg]:!h-[12px] [&_svg]:!w-[12px]',
 ].join(' ')
-const codeInputRowClass = [
-  'grid grid-cols-[minmax(0,1fr)_32px] items-center gap-[var(--space-1)]',
+const connectionRowClass = [
+  'grid min-w-0 grid-cols-[minmax(0,1fr)_32px] items-center gap-[var(--space-1)]',
   'border border-[var(--color-border)] rounded-[var(--radius-lg)]',
   'bg-[color-mix(in_srgb,var(--color-bg-muted)_72%,var(--color-bg))]',
   'p-[var(--space-1)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--color-surface)_58%,transparent)]',
 ].join(' ')
-const codeInputGroupClass = [
-  'min-w-0',
+const connectionRowNoActionClass = 'grid-cols-[minmax(0,1fr)]'
+const connectionCodeRowClass = [
+  'grid min-w-0 grid-cols-[minmax(0,1fr)_32px] items-center gap-[var(--space-1)]',
+  'border border-[var(--color-border)] rounded-[var(--radius-lg)]',
+  'bg-[color-mix(in_srgb,var(--color-bg-muted)_72%,var(--color-bg))]',
+  'p-[var(--space-1)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--color-surface)_58%,transparent)]',
 ].join(' ')
-const codeInputDisplayClass = [
-  'min-h-[32px] min-w-0 cursor-text select-text overflow-x-auto',
-  'whitespace-nowrap text-[length:0.72rem] leading-[32px] [font-family:var(--font-mono)]',
+const connectionInputClass = [
+  'h-[32px] min-h-[32px] min-w-0 border border-[var(--color-border-subtle)]',
+  'rounded-[calc(var(--radius-lg)-4px)] bg-[color-mix(in_srgb,var(--color-surface-raised)_86%,var(--color-surface))]',
+  'px-[var(--space-3)] py-0 text-[var(--color-text)] text-[length:0.78rem] font-650',
+  '[font-family:var(--font-mono)] leading-[32px] outline-none shadow-[var(--shadow-sm)]',
+  'transition-[background-color,border-color,box-shadow] duration-[var(--duration-fast)] ease-[var(--ease-out)]',
+  'placeholder:[font-family:var(--font-sans)] placeholder:font-500 placeholder:text-[var(--color-text-muted)] placeholder:opacity-72',
+  'focus:border-[var(--color-accent)] focus:shadow-[var(--shadow-sm),0_0_0_2px_var(--color-accent-subtle)]',
+  'selection:bg-[var(--color-accent-subtle)]',
+].join(' ')
+const connectionActionClass = [
+  'aspect-square !h-[32px] !min-h-[32px] !min-w-[32px] !w-[32px]',
+  'rounded-[calc(var(--radius-lg)-4px)] [&_svg]:!h-[13px] [&_svg]:!w-[13px]',
+].join(' ')
+const connectionBusyIconClass = 'animate-spin'
+const codeDisplayClass = [
+  'min-h-[32px] min-w-0 cursor-text select-text overflow-x-auto whitespace-nowrap',
+  'text-[length:0.72rem] leading-[32px] [font-family:var(--font-mono)]',
   '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
 ].join(' ')
-const codeInputSegmentClass = [
+const codeSegmentClass = [
   'inline-flex h-[32px] min-w-0 select-text items-center justify-center align-middle',
   'border border-[var(--color-border-subtle)] rounded-[calc(var(--radius-lg)-4px)]',
   'bg-[color-mix(in_srgb,var(--color-surface-raised)_86%,var(--color-surface))]',
   'px-[5px] font-650 text-[var(--color-text)] shadow-[var(--shadow-sm)]',
-  'transition duration-[var(--duration-fast)] ease-[var(--ease-out)]',
 ].join(' ')
-const codeInputPlaceholderSegmentClass = 'text-[var(--color-text-muted)] opacity-72'
-const codeInputSeparatorClass = [
+const codeSlotSegmentClass = 'w-[43px]'
+const codeWordSegmentClass = 'w-[52px]'
+const codeSeparatorClass = [
   'inline-flex shrink-0 select-text items-center justify-center px-[2px] align-middle text-[var(--color-text-muted)] [font-family:var(--font-mono)]',
   'text-[length:0.7rem] font-700',
 ].join(' ')
-const codeInputCopyClass = [
+const codeCopyClass = [
   'aspect-square !h-[32px] !min-h-[32px] !min-w-[32px] !w-[32px] rounded-[calc(var(--radius-lg)-4px)]',
   '!border-[var(--color-border-subtle)] !bg-[var(--color-surface-raised)]',
   'not-disabled:hover:!bg-[var(--color-surface)]',
   '[&_svg]:!h-[13px] [&_svg]:!w-[13px]',
 ].join(' ')
-const codeInputCopyWrapClass = 'relative min-w-[32px]'
-const codeInputCopySuccessClass = [
+const codeCopyWrapClass = 'relative min-w-[32px]'
+const codeCopySuccessClass = [
   '!border-[color-mix(in_srgb,var(--color-success)_26%,transparent)]',
   '!bg-[var(--color-success-subtle)] !text-[var(--color-success)]',
 ].join(' ')
-const codeInputCopiedTipClass = [
+const codeCopiedTipClass = [
   'pointer-events-none absolute bottom-[calc(100%+6px)] right-0 z-[2]',
   'rounded-[var(--radius-sm)] bg-[var(--color-success)] px-[var(--space-2)] py-[3px]',
   'text-white text-[length:0.68rem] font-650 leading-[var(--leading-tight)] shadow-[var(--shadow-sm)]',
   'animate-[fade-in_var(--duration-fast)_var(--ease-out)]',
 ].join(' ')
 
-function sanitizeSlot(value: string) {
-  return value.replace(/\D/g, '').slice(0, 4)
-}
+const CODE_SEGMENT_INDEXES = [0, 1, 2, 3] as const
 
-function sanitizeWord(value: string) {
-  return value.replace(/[^a-z]/gi, '').toLowerCase().slice(0, 5)
-}
-
-function parseSegments(code: string) {
-  if (!code.trim()) return [...EMPTY_SEGMENTS]
+function normalizeCode(rawCode: string) {
+  if (!rawCode.trim()) return null
 
   try {
-    return normalize_short_code(code).split('-').slice(0, 4)
-  } catch {
-    const parts = code.split('-', 4)
-    return [
-      sanitizeSlot(parts[0] ?? ''),
-      sanitizeWord(parts[1] ?? ''),
-      sanitizeWord(parts[2] ?? ''),
-      sanitizeWord(parts[3] ?? ''),
-    ]
-  }
-}
-
-function joinPartial(segments: string[]) {
-  let lastFilledIndex = -1
-  for (let index = segments.length - 1; index >= 0; index -= 1) {
-    if (segments[index].length > 0) {
-      lastFilledIndex = index
-      break
-    }
-  }
-  if (lastFilledIndex < 0) return ''
-  return segments.slice(0, lastFilledIndex + 1).join('-')
-}
-
-function joinFull(segments: string[]) {
-  return segments.join('-')
-}
-
-function getNormalizedCode(segments: string[]) {
-  if (!segments[0] || !segments[1] || !segments[2] || !segments[3]) return null
-
-  try {
-    return normalize_short_code(joinFull(segments))
+    return normalize_short_code(rawCode)
   } catch {
     return null
   }
+}
+
+function codeSegments(code: string) {
+  const normalized = normalizeCode(code)
+  return normalized ? normalized.split('-').slice(0, 4) : []
 }
 
 function copyWithCommand(text: string) {
@@ -164,41 +145,48 @@ async function copyText(text: string) {
   if (copyWithTextarea(text)) return
 
   if (navigator.clipboard?.writeText) {
-    try {
-      await Promise.race([
-        navigator.clipboard.writeText(text),
-        new Promise<never>((_, reject) => {
-          window.setTimeout(() => reject(new Error('Clipboard timed out')), 700)
-        }),
-      ])
-      return
-    } catch {
-      // Report a consistent failure below for restricted browser contexts.
-    }
+    await navigator.clipboard.writeText(text)
+    return
   }
 
   throw new Error('Clipboard unavailable')
 }
 
 export default function CodeInput(props: CodeInputProps) {
-  const [segments, setSegments] = createSignal([...EMPTY_SEGMENTS])
+  const [isEditingCode, setIsEditingCode] = createSignal(false)
   const [copied, setCopied] = createSignal(false)
-
-  let syncingFromProps = false
+  let inputRef: HTMLInputElement | undefined
   let copiedTimer = 0
 
-  const syncFromCode = (code: string) => {
-    syncingFromProps = true
-    setSegments(parseSegments(code))
+  const normalizedCode = () => normalizeCode(props.code)
+  const displayedSegments = () => codeSegments(props.code)
+  const hasInput = () => props.code.trim().length > 0
+  const isBusy = () => state.connectionState === 'starting' || state.connectionState === 'connecting' || state.connectionState === 'reconnecting'
+  const isCurrentRoomCode = () => Boolean(normalizedCode() && normalizedCode() === state.roomCode)
+  const showCodeDisplay = () => Boolean(!isEditingCode() && normalizedCode() && state.roomCode && normalizedCode() === state.roomCode)
+  const canSubmit = () => Boolean(state.node && normalizedCode() && !isBusy())
+
+  const handleInput: JSX.EventHandlerUnion<HTMLInputElement, InputEvent> = (event) => {
+    props.onCodeChange(event.currentTarget.value)
+  }
+
+  const handleSubmit = () => {
+    const normalized = normalizedCode()
+    if (!normalized || isBusy()) return
+    props.onSubmit(normalized)
+    setIsEditingCode(false)
+  }
+
+  const startEditingCode = () => {
+    setIsEditingCode(true)
     queueMicrotask(() => {
-      syncingFromProps = false
+      inputRef?.focus()
+      inputRef?.select()
     })
   }
 
-  const displayCode = () => getNormalizedCode(segments()) ?? joinPartial(segments())
-
   const handleCopy = async () => {
-    const normalized = getNormalizedCode(segments())
+    const normalized = normalizedCode()
     if (!normalized) return
     try {
       await copyText(normalized)
@@ -208,77 +196,120 @@ export default function CodeInput(props: CodeInputProps) {
         setCopied(false)
         copiedTimer = 0
       }, 2400)
-    } catch (err) {
-      addToast('error', `Copy failed: ${err instanceof Error ? err.message : String(err)}`)
+    } catch {
+      setCopied(false)
     }
   }
 
-  onMount(() => {
-    syncFromCode(props.code)
-  })
+  const handleGenerate = () => {
+    props.onGenerate()
+  }
 
-  createEffect(() => {
-    syncFromCode(props.code)
-  })
-
-  createEffect(() => {
-    const currentSegments = segments()
-    if (syncingFromProps) return
-
-    const partialCode = joinPartial(currentSegments)
-    props.onCodeChange(partialCode)
-  })
+  const handleKeyDown: JSX.EventHandlerUnion<HTMLInputElement, KeyboardEvent> = (event) => {
+    if (event.key !== 'Enter') return
+    handleSubmit()
+    event.preventDefault()
+  }
 
   onCleanup(() => {
     if (copiedTimer) window.clearTimeout(copiedTimer)
   })
 
   return (
-    <Card class={codeInputClass}>
-      <div class={codeInputHeaderClass}>
-        <label class={codeInputLabelClass}>
-          Connection Code
+    <Card class={connectionClass}>
+      <div class={connectionHeaderClass}>
+        <label class={connectionLabelClass} for="connection-code">
+          Connection
         </label>
-        <Button type="button" class={codeInputNewClass} variant="secondary" size="sm" onClick={props.onGenerate}>
+
+        <Button type="button" class={connectionNewClass} variant="secondary" size="sm" onClick={handleGenerate}>
           <RefreshCcw size={14} />
           New
         </Button>
       </div>
 
-      <div class={codeInputRowClass}>
-        <div class={codeInputGroupClass} role="group" aria-label="Connection Code">
-          <div class={codeInputDisplayClass} title={displayCode()}>
-            <For each={SEGMENT_INDEXES}>
+      <Show
+        when={showCodeDisplay()}
+        fallback={
+          <div class={cx(connectionRowClass, !hasInput() && connectionRowNoActionClass)}>
+            <input
+              id="connection-code"
+              ref={(element) => {
+                inputRef = element
+              }}
+              class={connectionInputClass}
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck={false}
+              value={props.code}
+              placeholder="Use code to connect a peer"
+              onInput={handleInput}
+              onKeyDown={handleKeyDown}
+            />
+
+            {hasInput() && (
+              <IconButton
+                class={connectionActionClass}
+                variant="default"
+                label={isBusy() && isCurrentRoomCode() ? 'Connecting' : 'Connect'}
+                onClick={handleSubmit}
+                disabled={!canSubmit()}
+              >
+                {isBusy() && isCurrentRoomCode() ? <Loader2 class={connectionBusyIconClass} size={14} /> : <Link size={14} />}
+              </IconButton>
+            )}
+          </div>
+        }
+      >
+        <div class={connectionCodeRowClass}>
+          <div
+            class={codeDisplayClass}
+            title={normalizedCode() ?? undefined}
+            role="button"
+            tabindex="0"
+            aria-label="Edit connection code"
+            onClick={startEditingCode}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return
+              event.preventDefault()
+              startEditingCode()
+            }}
+          >
+            <For each={CODE_SEGMENT_INDEXES}>
               {(index) => (
                 <>
-                  <span class={cx(codeInputSegmentClass, !segments()[index] && codeInputPlaceholderSegmentClass)}>
-                    {segments()[index] || SEGMENT_PLACEHOLDERS[index]}
+                  <span
+                    class={cx(codeSegmentClass, index === 0 ? codeSlotSegmentClass : codeWordSegmentClass)}
+                  >
+                    {displayedSegments()[index]}
                   </span>
                   <Show when={index < 3}>
-                    <span class={codeInputSeparatorClass} aria-hidden="true">-</span>
+                    <span class={codeSeparatorClass} aria-hidden="true">-</span>
                   </Show>
                 </>
               )}
             </For>
           </div>
-        </div>
 
-        <div class={codeInputCopyWrapClass}>
-          <IconButton
-            class={cx(codeInputCopyClass, copied() && codeInputCopySuccessClass)}
-            variant="ghost"
-            label={copied() ? 'Connection Code copied' : 'Copy Connection Code'}
-            onClick={handleCopy}
-            disabled={!getNormalizedCode(segments())}
-          >
-            {copied() ? <Check size={14} /> : <Copy size={14} />}
-          </IconButton>
-          <Show when={copied()}>
-            <span class={codeInputCopiedTipClass} role="status" aria-live="polite">Copied</span>
-          </Show>
+          <div class={codeCopyWrapClass}>
+            <IconButton
+              class={cx(codeCopyClass, copied() && codeCopySuccessClass)}
+              variant="ghost"
+              label={copied() ? 'Connection code copied' : 'Copy connection code'}
+              onClick={(event) => {
+                event.stopPropagation()
+                void handleCopy()
+              }}
+              disabled={!normalizedCode()}
+            >
+              {copied() ? <Check size={14} /> : <Copy size={14} />}
+            </IconButton>
+            <Show when={copied()}>
+              <span class={codeCopiedTipClass} role="status" aria-live="polite">Copied</span>
+            </Show>
+          </div>
         </div>
-      </div>
-
+      </Show>
     </Card>
   )
 }

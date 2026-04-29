@@ -79,12 +79,11 @@ export type PresenceMessage = {
   endpointId: string
   announcedAt: number
   requestReply: boolean
-  endpointTicket?: string
 }
 
 export type RendezvousEvent =
-  | { type: 'snapshot'; peers: Array<{ endpointId: string; connectedAt: number; peerType?: string; label?: string; endpointTicket?: string }> }
-  | { type: 'peer-joined'; endpointId: string; connectedAt: number; peerType?: string; label?: string; endpointTicket?: string }
+  | { type: 'snapshot'; peers: Array<{ endpointId: string; connectedAt: number; peerType?: string; label?: string }> }
+  | { type: 'peer-joined'; endpointId: string; connectedAt: number; peerType?: string; label?: string }
   | { type: 'peer-left'; endpointId: string }
   | { type: 'relay'; fromEndpointId: string; payload: ResumeRelayPayload }
 
@@ -120,7 +119,6 @@ export type Peer = {
   lastSeenAt: number
   peerType?: string
   label?: string
-  endpointTicket?: string
 }
 
 export type ReceivedFile = {

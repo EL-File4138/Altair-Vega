@@ -6,7 +6,6 @@ import { IconButton } from './ui/Button'
 import { setSettingsOpen, state, toggleSidebar, toggleTheme } from '../lib/state'
 
 type HeaderProps = {
-  onConnect: () => void
   onDisconnect: () => void
   onReconnect: () => void
 }
@@ -62,7 +61,6 @@ export default function Header(props: HeaderProps) {
           </div>
 
           <ConnectionStatus
-            onConnect={props.onConnect}
             onDisconnect={props.onDisconnect}
             onReconnect={props.onReconnect}
           />

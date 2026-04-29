@@ -7,7 +7,7 @@ import type {
   ConnectionState,
   ToastMessage,
 } from './types'
-import { WasmBrowserNode, generate_short_code } from 'altair-vega-browser'
+import { WasmBrowserNode } from 'altair-vega-browser'
 
 const LAST_CODE_STORAGE_KEY = 'altair-vega:last-code'
 
@@ -15,6 +15,7 @@ export type AppState = {
   node: WasmBrowserNode | null
   endpointId: string
   code: string
+  roomCode: string
   connectionState: ConnectionState
   roomConnection: RoomConnection | null
   peers: Peer[]
@@ -36,7 +37,8 @@ function getInitialTheme(): 'light' | 'dark' {
 const [state, setState] = createStore<AppState>({
   node: null,
   endpointId: '',
-  code: window.localStorage.getItem(LAST_CODE_STORAGE_KEY) ?? generate_short_code(),
+  code: '',
+  roomCode: '',
   connectionState: 'starting',
   roomConnection: null,
   peers: [],
@@ -66,6 +68,10 @@ export function saveCode(code: string) {
   window.localStorage.setItem(LAST_CODE_STORAGE_KEY, code)
 }
 
+export function setRoomCode(code: string) {
+  setState('roomCode', code)
+}
+
 export function clearSavedCode() {
   window.localStorage.removeItem(LAST_CODE_STORAGE_KEY)
 }
@@ -88,7 +94,6 @@ export function upsertPeer(
   connectedAt: number,
   peerType?: string,
   label?: string,
-  endpointTicket?: string,
 ): boolean {
   const selfId = state.endpointId
   if (endpointId === selfId) return false
@@ -102,7 +107,6 @@ export function upsertPeer(
           peer.lastSeenAt = connectedAt
           if (peerType !== undefined) peer.peerType = peerType
           if (label !== undefined) peer.label = label
-          if (endpointTicket !== undefined) peer.endpointTicket = endpointTicket
         }
       }),
     )
@@ -111,7 +115,7 @@ export function upsertPeer(
 
   setState(
     produce((s) => {
-      s.peers.push({ endpointId, lastSeenAt: connectedAt, peerType, label, endpointTicket })
+      s.peers.push({ endpointId, lastSeenAt: connectedAt, peerType, label })
     }),
   )
 

@@ -5,6 +5,7 @@ import {
   setNode,
   saveCode,
   setCode,
+  setRoomCode,
   clearPeers,
   setConnectionState,
   setRoomConnection,
@@ -104,20 +105,14 @@ export default function App() {
     try { normalized = normalize_short_code(rawCode) }
     catch { addToast('error', 'Invalid code format'); return }
     saveCode(normalized)
+    setRoomCode(normalized)
     clearPeers()
     clearChat()
     state.roomConnection?.close()
     if (announceTimer) { window.clearInterval(announceTimer); announceTimer = 0 }
     setConnectionState('connecting')
 
-    let endpointTicket: string | undefined
-    try {
-      endpointTicket = await state.node.endpoint_ticket()
-    } catch (err) {
-      addToast('warning', `Endpoint ticket unavailable: ${stringifyError(err)}`)
-    }
-
-    const conn = connectRoom(normalized, state.endpointId, endpointTicket, {
+    const conn = connectRoom(normalized, state.endpointId, {
       onOpen() { setConnectionState('connected'); addToast('success', `Joined room`) },
       onEvent(event: RendezvousEvent) { handleRendezvousEvent(event) },
       onClose(_code, reason) { setConnectionState('fallback'); addToast('warning', reason ?? 'Room service disconnected, using local fallback') },
@@ -126,9 +121,9 @@ export default function App() {
         setConnectionState('reconnecting')
         addToast('warning', `Reconnecting to room service (${attempt}) in ${Math.round(delayMs / 1000)}s`)
       },
-      onFallbackPresence(endpointId, announcedAt, fallbackEndpointTicket) {
+      onFallbackPresence(endpointId, announcedAt) {
         setConnectionState('fallback')
-        if (upsertPeer(endpointId, announcedAt, undefined, undefined, fallbackEndpointTicket)) addToast('info', 'Peer discovered')
+        if (upsertPeer(endpointId, announcedAt)) addToast('info', 'Peer discovered')
       },
       onFallbackRelayUnavailable() { addToast('warning', 'Resume not available in local fallback mode') },
     })
@@ -148,10 +143,10 @@ export default function App() {
     switch (event.type) {
       case 'snapshot':
         clearPeers()
-        for (const peer of event.peers) upsertPeer(peer.endpointId, peer.connectedAt, peer.peerType, peer.label, peer.endpointTicket)
+        for (const peer of event.peers) upsertPeer(peer.endpointId, peer.connectedAt, peer.peerType, peer.label)
         break
       case 'peer-joined':
-        if (upsertPeer(event.endpointId, event.connectedAt, event.peerType, event.label, event.endpointTicket)) addToast('info', 'Peer joined')
+        if (upsertPeer(event.endpointId, event.connectedAt, event.peerType, event.label)) addToast('info', 'Peer joined')
         break
       case 'peer-left':
         if (removePeer(event.endpointId)) addToast('info', 'Peer left')
@@ -232,13 +227,8 @@ export default function App() {
 
   async function handleSendMessage(text: string) {
     if (!state.node || !state.selectedPeerId) return
-    const peer = selectedPeer()
     try {
-      if (peer?.endpointTicket) {
-        await state.node.send_message_to_ticket(peer.endpointTicket, text)
-      } else {
-        await state.node.send_message(state.selectedPeerId, text)
-      }
+      await state.node.send_message(state.selectedPeerId, text)
       addChatMessage({ id: generateId(), direction: 'sent', variant: 'text', peerEndpointId: state.selectedPeerId, timestamp: Date.now(), text })
     } catch (err) {
       addToast('error', `Send failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -247,7 +237,6 @@ export default function App() {
 
   async function handleSendFile(file: File) {
     if (!state.node || !state.selectedPeerId) return
-    const peer = selectedPeer()
     let storageKey: string | null = null
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
@@ -262,11 +251,7 @@ export default function App() {
         storageKey, hashHex, sizeBytes: bytes.byteLength, chunkSizeBytes: 256 * 1024, name: file.name, mimeType,
       })
       const missingRanges = resume?.missingRanges ?? fullMissingRanges(bytes.byteLength, 256 * 1024)
-      if (peer?.endpointTicket) {
-        await state.node.send_file_to_ticket_with_ranges(peer.endpointTicket, file.name, mimeType, bytes, missingRanges)
-      } else {
-        await state.node.send_file_with_ranges(state.selectedPeerId, file.name, mimeType, bytes, missingRanges)
-      }
+      await state.node.send_file_with_ranges(state.selectedPeerId, file.name, mimeType, bytes, missingRanges)
       updateFileInChat(storageKey, {
         bytesComplete: bytes.byteLength,
         completed: true,
@@ -286,10 +271,6 @@ export default function App() {
     }
   }
 
-  function selectedPeer() {
-    return state.peers.find((peer) => peer.endpointId === state.selectedPeerId)
-  }
-
   function parseBrowserFileError(message: string): { endpointId: string; detail: string } | null {
     const match = message.match(/^browser file connection error from ([^:]+):\s*(.*)$/)
     if (!match) return null
@@ -299,17 +280,16 @@ export default function App() {
     }
   }
 
-  function handleGenerateCode() { setCode(generate_short_code()) }
-  function handleConnect() { void joinCode(state.code) }
+  function handleGenerateCodeAndConnect() { void joinCode(generate_short_code()) }
+  function handleConnect(code = state.code) { void joinCode(code) }
   function handleDisconnect() { disconnectRoom() }
-  function handleReconnect() { void joinCode(state.code) }
+  function handleReconnect(code = state.roomCode || state.code) { void joinCode(code) }
 
   return (
     <div class={appLayoutClass}>
       <Header
-        onConnect={handleConnect}
         onDisconnect={handleDisconnect}
-        onReconnect={handleReconnect}
+        onReconnect={() => handleReconnect()}
       />
 
       <main class={appMainClass}>
@@ -319,7 +299,12 @@ export default function App() {
         </Show>
 
         <aside id="app-sidebar" class={cx(sidebarClass, state.sidebarOpen && sidebarOpenClass)}>
-          <CodeInput code={state.code} onCodeChange={setCode} onGenerate={handleGenerateCode} />
+          <CodeInput
+            code={state.code}
+            onCodeChange={setCode}
+            onSubmit={handleConnect}
+            onGenerate={handleGenerateCodeAndConnect}
+          />
           <div class={sidebarPanelsClass}>
             <PeerBanner />
             <SidebarFiles />

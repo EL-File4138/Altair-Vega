@@ -242,7 +242,7 @@ export default function CodeInput(props: CodeInputProps) {
               autocapitalize="off"
               spellcheck={false}
               value={props.code}
-              placeholder="Use code to connect a peer"
+              placeholder="Use code to join a room"
               onInput={handleInput}
               onKeyDown={handleKeyDown}
             />

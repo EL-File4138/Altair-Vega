@@ -1,3 +1,15 @@
 .connection-status {
-  min-height: 24px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1;
+  transition: background var(--duration-normal) var(--ease-out),
+              border-color var(--duration-normal) var(--ease-out),
+              color var(--duration-normal) var(--ease-out);
+}
+
+.connection-status .status-dot {
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 10%, transparent);
 }

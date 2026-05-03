@@ -1,9 +1,10 @@
-import { WasmBrowserNode } from 'altair-vega-browser'
+import type { WasmBrowserNode } from 'altair-vega-browser'
 import type { BrowserEvent, RawBrowserEvent, PersistedReceivedFile, PersistedReceivedFileChunk } from './types'
 import { makeStorageKey } from './format'
 import { loadReceivedFileManifest, loadReceivedChunk, storeReceivedChunk, storeReceivedManifest } from './storage'
 
 export async function spawnNode(): Promise<WasmBrowserNode> {
+  const { WasmBrowserNode } = await import('altair-vega-browser')
   return WasmBrowserNode.spawn()
 }
 

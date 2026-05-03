@@ -1,5 +1,4 @@
-import { onMount, onCleanup, Show } from 'solid-js'
-import { generate_short_code, normalize_short_code, hash_bytes_hex } from 'altair-vega-browser'
+import { createEffect, createSignal, onMount, onCleanup, Show } from 'solid-js'
 import {
   state,
   setNode,
@@ -23,6 +22,8 @@ import { connectRoom } from './lib/rendezvous'
 import { handleRelayPayload, requestResumeInfo } from './lib/resume'
 import { listReceivedFiles } from './lib/storage'
 import { makeStorageKey, fullMissingRanges, generateId } from './lib/format'
+import { encodeMessageBody, type MessageRenderMode } from './lib/message-format'
+import { generate_short_code, normalize_short_code } from './lib/short-code'
 import type { RendezvousEvent, RawBrowserEvent, BrowserEvent } from './lib/types'
 
 import Header from './components/Header'
@@ -38,9 +39,20 @@ import './App.css'
 
 export default function App() {
   let announceTimer = 0
+  let backdropTimer = 0
+  const [renderSidebarBackdrop, setRenderSidebarBackdrop] = createSignal(state.sidebarOpen)
+  const [chatDragDepth, setChatDragDepth] = createSignal(0)
 
   onMount(async () => {
     document.documentElement.setAttribute('data-theme', state.theme)
+    const queryCode = new URLSearchParams(window.location.search).get('code')?.trim()
+    if (queryCode) {
+      try {
+        setCode(normalize_short_code(queryCode))
+      } catch {
+        addToast('warning', 'Invalid code in link')
+      }
+    }
     try {
       const node = await spawnNode()
       setNode(node)
@@ -55,7 +67,25 @@ export default function App() {
 
   onCleanup(() => {
     if (announceTimer) window.clearInterval(announceTimer)
+    if (backdropTimer) window.clearTimeout(backdropTimer)
     state.roomConnection?.close()
+  })
+
+  createEffect(() => {
+    if (backdropTimer) {
+      window.clearTimeout(backdropTimer)
+      backdropTimer = 0
+    }
+
+    if (state.sidebarOpen) {
+      setRenderSidebarBackdrop(true)
+      return
+    }
+
+    backdropTimer = window.setTimeout(() => {
+      setRenderSidebarBackdrop(false)
+      backdropTimer = 0
+    }, 180)
   })
 
   function joinCode(rawCode: string) {
@@ -150,11 +180,12 @@ export default function App() {
     }
   }
 
-  async function handleSendMessage(text: string) {
+  async function handleSendMessage(text: string, mode: MessageRenderMode) {
     if (!state.node || !state.selectedPeerId) return
+    const body = encodeMessageBody(text, mode)
     try {
-      await state.node.send_message(state.selectedPeerId, text)
-      addChatMessage({ id: generateId(), direction: 'sent', variant: 'text', peerEndpointId: state.selectedPeerId, timestamp: Date.now(), text })
+      await state.node.send_message(state.selectedPeerId, body)
+      addChatMessage({ id: generateId(), direction: 'sent', variant: 'text', peerEndpointId: state.selectedPeerId, timestamp: Date.now(), text: body })
     } catch (err) {
       addToast('error', `Send failed: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -164,6 +195,7 @@ export default function App() {
     if (!state.node || !state.selectedPeerId) return
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
+      const { hash_bytes_hex } = await import('altair-vega-browser')
       const hashHex = hash_bytes_hex(bytes)
       const storageKey = makeStorageKey(state.endpointId, hashHex)
       const mimeType = file.type || 'application/octet-stream'
@@ -182,6 +214,45 @@ export default function App() {
     }
   }
 
+  const hasDraggedFiles = (event: DragEvent) => {
+    return Array.from(event.dataTransfer?.types ?? []).includes('Files')
+  }
+
+  const isComposerDragTarget = (event: DragEvent) => {
+    const target = event.target
+    return target instanceof Element && target.closest('.compose-bar') !== null
+  }
+
+  const chatDropEnabled = (event: DragEvent) => {
+    return Boolean(state.selectedPeerId) && hasDraggedFiles(event) && !isComposerDragTarget(event)
+  }
+
+  const handleChatDragEnter = (event: DragEvent) => {
+    if (!chatDropEnabled(event)) return
+    event.preventDefault()
+    setChatDragDepth((value) => value + 1)
+  }
+
+  const handleChatDragOver = (event: DragEvent) => {
+    if (!chatDropEnabled(event)) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleChatDragLeave = (event: DragEvent) => {
+    if (!chatDropEnabled(event)) return
+    event.preventDefault()
+    setChatDragDepth((value) => Math.max(0, value - 1))
+  }
+
+  const handleChatDrop = (event: DragEvent) => {
+    if (!chatDropEnabled(event)) return
+    event.preventDefault()
+    setChatDragDepth(0)
+    const file = event.dataTransfer?.files?.[0]
+    if (file) void handleSendFile(file)
+  }
+
   function handleCodeSubmit(code: string) { joinCode(code) }
   function handleGenerateCode() { setCode(generate_short_code()) }
 
@@ -191,8 +262,13 @@ export default function App() {
 
       <main class="app-main">
         {/* Mobile backdrop */}
-        <Show when={state.sidebarOpen}>
-          <button class="sidebar-backdrop" type="button" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} />
+        <Show when={renderSidebarBackdrop()}>
+          <button
+            class={`sidebar-backdrop ${state.sidebarOpen ? 'is-open' : ''}`}
+            type="button"
+            aria-label="Close sidebar"
+            onClick={() => setSidebarOpen(false)}
+          />
         </Show>
 
         <aside class={`app-sidebar ${state.sidebarOpen ? 'is-open' : ''}`}>
@@ -206,8 +282,24 @@ export default function App() {
           </div>
         </aside>
 
-        <div class="app-chat">
-          <ChatThread />
+        <div
+          class={`app-chat ${chatDragDepth() > 0 ? 'is-dragging-file' : ''}`}
+          onDragEnter={handleChatDragEnter}
+          onDragOver={handleChatDragOver}
+          onDragLeave={handleChatDragLeave}
+          onDrop={handleChatDrop}
+        >
+          <div class="app-chat__drop-surface">
+            <ChatThread />
+            <Show when={chatDragDepth() > 0}>
+              <div class="app-chat__drop-overlay" aria-live="polite">
+                <div class="app-chat__drop-card">
+                  <strong>Drop file to send</strong>
+                  <span>Release anywhere in the chat area.</span>
+                </div>
+              </div>
+            </Show>
+          </div>
           <ComposeBar onSendMessage={handleSendMessage} onSendFile={handleSendFile} />
         </div>
       </main>

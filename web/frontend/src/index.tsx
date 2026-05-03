@@ -5,6 +5,7 @@ import './styles/global.css'
 import './styles/components.css'
 import { render } from 'solid-js/web'
 import App from './App'
+import { registerServiceWorker } from './lib/pwa'
 
 const root = document.getElementById('root')
 if (!root) throw new Error('Root element not found')
@@ -18,3 +19,4 @@ if (savedTheme === 'light' || savedTheme === 'dark') {
 }
 
 render(() => <App />, root)
+registerServiceWorker()

@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from 'solid-js'
+import { CheckCircle2, ChevronDown, Download, Files, Loader2, Trash2 } from 'lucide-solid'
 
 import { formatBytes, formatRelative, joinChunks } from '../lib/format'
 import { peerName } from '../lib/identity'
@@ -6,30 +7,6 @@ import { loadReceivedFileChunks, loadReceivedFileManifest, deleteReceivedFile, c
 import { removeReceivedFile, setReceivedFiles, state, addToast } from '../lib/state'
 
 import './SidebarFiles.css'
-
-function DownloadIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M10 3.5v8m0 0 3-3m-3 3-3-3M4.5 14.5v1h11v-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-    </svg>
-  )
-}
-
-function TrashIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M5.5 6.5h9m-7.5 0v8m3-8v8m3-8v8M7 6.5l.5-1.5h5L13 6.5m-6.5 0 .5 9h6l.5-9" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" />
-    </svg>
-  )
-}
-
-function ChevronIcon(props: { open: boolean }) {
-  return (
-    <svg class={`sidebar-card__chevron ${props.open ? 'is-open' : ''}`} viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M7 8l3 3 3-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-    </svg>
-  )
-}
 
 export default function SidebarFiles() {
   const [open, setOpen] = createSignal(false)
@@ -81,12 +58,13 @@ export default function SidebarFiles() {
     <div class="sidebar-card">
       <button class="sidebar-card__header" type="button" onClick={() => setOpen(!open())}>
         <span class="sidebar-card__title">
+          <Files size={15} />
           Files
           <Show when={fileCount() > 0}>
             <span class="sidebar-card__badge">{fileCount()}</span>
           </Show>
         </span>
-        <ChevronIcon open={open()} />
+        <ChevronDown class={`sidebar-card__chevron ${open() ? 'is-open' : ''}`} size={16} />
       </button>
 
       <Show when={open()}>
@@ -98,22 +76,23 @@ export default function SidebarFiles() {
             <div class="sidebar-files__list">
               <For each={sortedFiles()}>
                 {(file) => (
-                  <div class="sidebar-files__item">
-                    <div class="sidebar-files__name" title={file.name}>{file.name}</div>
-                    <div class="sidebar-files__meta">
-                      <span>{peerName(file.endpointId)}</span>
-                      <span>{formatBytes(file.sizeBytes)}</span>
-                      <span>{formatRelative(file.storedAt)}</span>
-                      <span class={`pill ${file.completed ? 'pill-success' : 'pill-warning'}`}>
-                        {file.completed ? 'Complete' : 'Partial'}
-                      </span>
-                    </div>
-                    <div class="sidebar-files__actions">
-                      <button class="btn btn-subtle btn-sm" type="button" disabled={!file.completed || busyKey() !== null} onClick={() => void handleDownload(file.storageKey)}>
-                        <DownloadIcon /> Download
-                      </button>
+                    <div class="sidebar-files__item">
+                      <div class="sidebar-files__name" title={file.name}>{file.name}</div>
+                      <div class="sidebar-files__meta">
+                        <span>{peerName(file.endpointId)}</span>
+                        <span>{formatBytes(file.sizeBytes)}</span>
+                        <span>{formatRelative(file.storedAt)}</span>
+                      </div>
+                      <div class="sidebar-files__actions">
+                        <span class={`sidebar-files__status ${file.completed ? 'sidebar-files__status--complete' : 'sidebar-files__status--partial'}`}>
+                          {file.completed ? <CheckCircle2 size={14} /> : <Loader2 class="sidebar-files__status-spin" size={14} />}
+                          {file.completed ? 'Complete' : 'Partial'}
+                        </span>
+                        <button class="btn btn-subtle btn-sm" type="button" disabled={!file.completed || busyKey() !== null} onClick={() => void handleDownload(file.storageKey)}>
+                          <Download size={14} /> Download
+                        </button>
                       <button class="btn btn-ghost btn-sm" type="button" disabled={busyKey() !== null} onClick={() => void handleRemove(file.storageKey)}>
-                        <TrashIcon />
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   </div>
@@ -123,7 +102,7 @@ export default function SidebarFiles() {
 
             <div class="sidebar-files__footer">
               <button class="btn btn-ghost btn-sm sidebar-files__clear-all" type="button" disabled={busyKey() !== null} onClick={() => void handleClearAll()}>
-                <TrashIcon /> Clear all files
+                <Trash2 size={14} /> Clear all files
               </button>
             </div>
           </Show>

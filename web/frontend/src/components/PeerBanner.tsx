@@ -1,9 +1,11 @@
-import { Show, For, createSignal } from 'solid-js'
+import { Show, For } from 'solid-js'
+import { Check, Users, UsersRound } from 'lucide-solid'
 
 import { peerName } from '../lib/identity'
 import { selectPeer, state } from '../lib/state'
 
 import PeerAvatar from './PeerAvatar'
+import EmptyState from './EmptyState'
 
 import './PeerBanner.css'
 
@@ -21,100 +23,55 @@ function peerTypeLabel(peerType?: string, label?: string) {
 }
 
 export default function PeerBanner() {
-  const [showEndpoint, setShowEndpoint] = createSignal(false)
-
-  const currentPeer = () =>
-    state.peers.find((peer) => peer.endpointId === state.selectedPeerId) ?? state.peers[0]
-
-  const handleCopyEndpoint = async () => {
-    const endpointId = currentPeer()?.endpointId
-    if (!endpointId) return
-    await navigator.clipboard.writeText(endpointId)
+  const shortEndpoint = (endpointId: string) => {
+    if (endpointId.length <= 16) return endpointId
+    return `${endpointId.slice(0, 8)}...${endpointId.slice(-6)}`
   }
 
   return (
     <section class="peer-banner card">
+      <div class="peer-banner-header-row">
+        <div class="peer-banner-title">
+          <Users size={15} />
+          Peers
+        </div>
+        <span class="pill pill-neutral peer-banner-count">{state.peers.length}</span>
+      </div>
+
       <Show
         when={state.peers.length > 0}
-        fallback={
-          <div class="peer-banner-waiting">
-            <span class="peer-banner-pulse" aria-hidden="true" />
-            <div>
-              <div class="peer-banner-title">Waiting for a peer to join...</div>
-              <div class="peer-banner-subtitle">
-                Stay on this code and we'll connect automatically.
-              </div>
-            </div>
-          </div>
-        }
+        fallback={<EmptyState variant="compact" icon={<UsersRound />} message="No peers" />}
       >
-        {/* Single peer: show identity directly */}
-        <Show when={state.peers.length === 1}>
-          <div class="peer-banner-header">
-            <PeerAvatar endpointId={currentPeer()!.endpointId} size="lg" />
-            <div class="peer-banner-copy">
-              <button
-                type="button"
-                class="peer-banner-identity"
-                onClick={() => setShowEndpoint((v) => !v)}
-                aria-expanded={showEndpoint()}
-              >
-                <span class="peer-banner-name">{peerName(currentPeer()!.endpointId)}</span>
-                <span class="pill pill-neutral">
-                  {peerTypeLabel(currentPeer()!.peerType, currentPeer()!.label)}
-                </span>
-              </button>
-              <Show when={showEndpoint()}>
-                <div class="peer-banner-endpoint-row">
-                  <code class="peer-banner-endpoint">{currentPeer()!.endpointId}</code>
-                  <button
-                    type="button"
-                    class="btn btn-subtle"
-                    onClick={() => void handleCopyEndpoint()}
+        <div class="peer-list" role="listbox" aria-label="Select a peer">
+          <For each={state.peers}>
+            {(peer) => {
+              const selected = () => peer.endpointId === state.selectedPeerId
+              return (
+                <button
+                  type="button"
+                  class="peer-list-item"
+                  classList={{ 'peer-list-item--selected': selected() }}
+                  role="option"
+                  aria-selected={selected()}
+                  onClick={() => selectPeer(peer.endpointId)}
+                  title={peer.endpointId}
+                >
+                  <PeerAvatar endpointId={peer.endpointId} size="sm" />
+                  <span class="peer-list-info">
+                    <span class="peer-list-name">{peerName(peer.endpointId)}</span>
+                    <span class="peer-list-endpoint">{shortEndpoint(peer.endpointId)}</span>
+                  </span>
+                  <Show
+                    when={selected()}
+                    fallback={<span class="pill pill-neutral peer-list-kind">{peerTypeLabel(peer.peerType, peer.label)}</span>}
                   >
-                    Copy
-                  </button>
-                </div>
-              </Show>
-            </div>
-          </div>
-          <div class="peer-banner-footnote">Connected peer</div>
-        </Show>
-
-        {/* Multiple peers: inline radio list */}
-        <Show when={state.peers.length > 1}>
-          <div class="peer-banner-multi-label">
-            {state.peers.length} peers in room
-          </div>
-          <div class="peer-list" role="radiogroup" aria-label="Select a peer">
-            <For each={state.peers}>
-              {(peer) => {
-                const selected = () => peer.endpointId === state.selectedPeerId
-                return (
-                  <label
-                    class="peer-list-item"
-                    classList={{ 'peer-list-item--selected': selected() }}
-                  >
-                    <input
-                      type="radio"
-                      name="peer-select"
-                      class="peer-list-radio"
-                      checked={selected()}
-                      onChange={() => selectPeer(peer.endpointId)}
-                    />
-                    <PeerAvatar endpointId={peer.endpointId} size="sm" />
-                    <div class="peer-list-info">
-                      <span class="peer-list-name">{peerName(peer.endpointId)}</span>
-                      <span class="pill pill-neutral">
-                        {peerTypeLabel(peer.peerType, peer.label)}
-                      </span>
-                    </div>
-                  </label>
-                )
-              }}
-            </For>
-          </div>
-        </Show>
+                    <span class="peer-list-check"><Check size={16} /></span>
+                  </Show>
+                </button>
+              )
+            }}
+          </For>
+        </div>
       </Show>
     </section>
   )

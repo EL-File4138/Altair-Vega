@@ -8,27 +8,27 @@
 }
 
 .peer-avatar-sm {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
 }
 
 .peer-avatar-md {
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
 }
 
 .peer-avatar-lg {
-  width: 48px;
-  height: 48px;
+  width: 38px;
+  height: 38px;
 }
 
 .peer-avatar-initials {
-  font-size: var(--text-sm);
-  font-weight: 600;
+  font-size: 0.72rem;
+  font-weight: 700;
   line-height: 1;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .peer-avatar-lg .peer-avatar-initials {
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
 }

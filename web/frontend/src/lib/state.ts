@@ -7,7 +7,8 @@ import type {
   ConnectionState,
   ToastMessage,
 } from './types'
-import { WasmBrowserNode, generate_short_code } from 'altair-vega-browser'
+import type { WasmBrowserNode } from 'altair-vega-browser'
+import { generate_short_code } from './short-code'
 
 const LAST_CODE_STORAGE_KEY = 'altair-vega:last-code'
 

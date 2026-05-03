@@ -6,7 +6,7 @@ const CONNECTION_STATUS_META = {
   starting: {
     label: 'Starting...',
     pillClass: 'pill-neutral',
-    dotClass: 'status-dot-neutral',
+    dotClass: 'status-dot-neutral status-dot-pulse',
   },
   ready: {
     label: 'Ready',
@@ -39,7 +39,7 @@ const CONNECTION_STATUS_META = {
     dotClass: 'status-dot-danger',
   },
   error: {
-    label: 'Error',
+    label: 'Unavailable',
     pillClass: 'pill-danger',
     dotClass: 'status-dot-danger',
   },

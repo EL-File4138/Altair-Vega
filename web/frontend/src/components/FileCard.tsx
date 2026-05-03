@@ -1,4 +1,5 @@
 import { Show, createSignal, createEffect, onCleanup } from 'solid-js'
+import { CheckCircle2, Download, FileText, Loader2 } from 'lucide-solid'
 
 import { formatBytes, formatPercent, joinChunks, isImageMime, isSafeToOpen } from '../lib/format'
 import { loadReceivedFileChunks, loadReceivedFileManifest } from '../lib/storage'
@@ -25,6 +26,10 @@ export default function FileCard(props: FileCardProps) {
   const isImage = () => isImageMime(ft().mimeType)
   const progressPercent = () => formatPercent(ft().bytesComplete, ft().sizeBytes)
   const hashPrefix = () => ft().hashHex.slice(0, 8)
+  const statusLabel = () => {
+    if (!isCompleted()) return isReceived() ? 'Incomplete' : 'Sending'
+    return isReceived() ? 'Received' : 'Sent'
+  }
 
   // Build image preview URL (sent via blobUrl, received from IndexedDB)
   createEffect(async () => {
@@ -129,12 +134,7 @@ export default function FileCard(props: FileCardProps) {
           when={isImage() && imageUrl()}
           fallback={
             <div class="file-card-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M7 3.75h7l4.25 4.25v12.25a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5v-15a1.5 1.5 0 0 1 1.5-1.5Z" />
-                <path d="M14 3.75V8h4.25" />
-                <path d="M8.5 12.25h7" />
-                <path d="M8.5 15.75h7" />
-              </svg>
+              <FileText size={20} />
             </div>
           }
         >
@@ -147,13 +147,6 @@ export default function FileCard(props: FileCardProps) {
             <div class="file-card-size">{formatBytes(ft().sizeBytes)}</div>
           </div>
 
-          <Show when={props.direction === 'sent' && isCompleted()}>
-            <div class="file-card-status file-card-status-sent">
-              <span class="file-card-check" aria-hidden="true">✓</span>
-              <span>Sent</span>
-            </div>
-          </Show>
-
           <Show when={!isCompleted()}>
             <div class="file-card-progress-wrap">
               <div class="progress-bar" aria-hidden="true">
@@ -163,23 +156,35 @@ export default function FileCard(props: FileCardProps) {
                 <span>{formatBytes(ft().bytesComplete)} of {formatBytes(ft().sizeBytes)}</span>
                 <span>{progressPercent()}</span>
               </div>
-              <span class="pill pill-warning">{isReceived() ? 'Incomplete' : 'Sending'}</span>
             </div>
           </Show>
 
-          <Show when={isReceived() && isCompleted()}>
-            <div class="file-card-actions">
+        </div>
+
+        <div class="file-card-footer">
+          <span
+            class={`file-card-status ${!isCompleted() ? 'file-card-status-pending' : 'file-card-status-complete'}`}
+          >
+            <Show when={isCompleted()} fallback={<Loader2 class="file-card-status-spin" size={14} />}>
+              <CheckCircle2 size={14} />
+            </Show>
+            {statusLabel()}
+          </span>
+
+          <div class="file-card-actions">
+            <Show when={isReceived() && isCompleted()}>
               <button
                 type="button"
                 class="btn btn-subtle"
                 onClick={(e) => { e.stopPropagation(); void handleDownload() }}
                 disabled={downloading()}
               >
+                <Download size={14} />
                 {downloading() ? 'Preparing...' : 'Download'}
               </button>
-              <span class="file-card-hash" title={ft().hashHex}>#{hashPrefix()}</span>
-            </div>
-          </Show>
+            </Show>
+            <span class="file-card-hash" title={ft().hashHex}>#{hashPrefix()}</span>
+          </div>
         </div>
       </article>
 

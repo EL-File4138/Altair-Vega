@@ -1,4 +1,5 @@
 import { For, Show, createEffect, onMount } from 'solid-js'
+import { Upload } from 'lucide-solid'
 
 import { state } from '../lib/state'
 
@@ -29,7 +30,7 @@ export default function ChatThread() {
     <section class="chat-thread">
       <Show
         when={messages().length > 0}
-        fallback={<EmptyState message="Send a message or drop a file to get started" />}
+        fallback={<EmptyState icon={<Upload />} message="Send a message or drop a file to get started" />}
       >
         <div class="chat-thread-scroll" ref={containerRef}>
           <div class="chat-thread-list">

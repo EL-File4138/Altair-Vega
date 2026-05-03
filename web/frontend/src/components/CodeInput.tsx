@@ -1,5 +1,9 @@
-import { createEffect, createSignal, onMount, type JSX } from 'solid-js'
-import { normalize_short_code } from 'altair-vega-browser'
+import { For, Show, createEffect, createSignal, onCleanup, onMount, type JSX } from 'solid-js'
+import qrcode from 'qrcode-generator'
+import { Check, Copy, Link2, QrCode, RefreshCcw } from 'lucide-solid'
+
+import { addToast, state } from '../lib/state'
+import { normalize_short_code } from '../lib/short-code'
 
 import './CodeInput.css'
 
@@ -13,6 +17,66 @@ type CodeInputProps = {
 type SegmentIndex = 0 | 1 | 2 | 3
 
 const EMPTY_SEGMENTS = ['', '', '', '']
+const SEGMENT_PLACEHOLDERS = ['0000', 'word', 'word', 'word']
+const SEGMENT_INDEXES: SegmentIndex[] = [0, 1, 2, 3]
+
+function copyWithCommand(text: string) {
+  if (!document.queryCommandSupported?.('copy')) return false
+
+  const selection = window.getSelection()
+  const previousRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null
+  const range = document.createRange()
+  const span = document.createElement('span')
+  span.textContent = text
+  span.style.position = 'fixed'
+  span.style.top = '0'
+  span.style.left = '0'
+  span.style.whiteSpace = 'pre'
+  span.style.opacity = '0'
+  document.body.appendChild(span)
+  range.selectNodeContents(span)
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } finally {
+    selection?.removeAllRanges()
+    if (previousRange) selection?.addRange(previousRange)
+    span.remove()
+  }
+
+  return copied
+}
+
+function copyWithTextarea(text: string) {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.readOnly = true
+  textarea.style.position = 'fixed'
+  textarea.style.top = '0'
+  textarea.style.left = '0'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  textarea.setSelectionRange(0, textarea.value.length)
+
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } finally {
+    textarea.remove()
+  }
+
+  return copied
+}
+
+async function copyText(text: string) {
+  if (copyWithCommand(text)) return
+  if (copyWithTextarea(text)) return
+  await navigator.clipboard.writeText(text)
+}
 
 function sanitizeSlot(value: string) {
   return value.replace(/\D/g, '').slice(0, 4)
@@ -67,9 +131,14 @@ function getNormalizedCode(segments: string[]) {
 export default function CodeInput(props: CodeInputProps) {
   const [segments, setSegments] = createSignal([...EMPTY_SEGMENTS])
   const [focusedIndex, setFocusedIndex] = createSignal<SegmentIndex | null>(null)
+  const [copied, setCopied] = createSignal(false)
+  const [linkCopied, setLinkCopied] = createSignal(false)
+  const [showQr, setShowQr] = createSignal(false)
   const inputRefs: Array<HTMLInputElement | undefined> = []
 
   let syncingFromProps = false
+  let copiedTimer = 0
+  let linkCopiedTimer = 0
 
   const syncFromCode = (code: string) => {
     syncingFromProps = true
@@ -121,14 +190,59 @@ export default function CodeInput(props: CodeInputProps) {
   const handleCopy = async () => {
     const normalized = getNormalizedCode(segments())
     if (!normalized) return
-    await navigator.clipboard.writeText(normalized)
+    try {
+      await copyText(normalized)
+      setCopied(true)
+      if (copiedTimer) window.clearTimeout(copiedTimer)
+      copiedTimer = window.setTimeout(() => {
+        setCopied(false)
+        copiedTimer = 0
+      }, 1200)
+    } catch (err) {
+      addToast('error', `Copy failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const directLink = () => {
+    const normalized = getNormalizedCode(segments())
+    if (!normalized) return null
+    const url = new URL(window.location.href)
+    url.searchParams.set('code', normalized)
+    return url.toString()
+  }
+
+  const qrDataUrl = () => {
+    const link = directLink()
+    if (!link) return null
+    const qr = qrcode(0, 'M')
+    qr.addData(link)
+    qr.make()
+    return qr.createDataURL(5, 2)
+  }
+
+  const handleCopyLink = async () => {
+    const link = directLink()
+    if (!link) return
+    try {
+      await copyText(link)
+      setLinkCopied(true)
+      if (linkCopiedTimer) window.clearTimeout(linkCopiedTimer)
+      linkCopiedTimer = window.setTimeout(() => {
+        setLinkCopied(false)
+        linkCopiedTimer = 0
+      }, 1200)
+    } catch (err) {
+      addToast('error', `Link copy failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   const handleConnect = () => {
     const normalized = getNormalizedCode(segments())
-    if (!normalized) return
+    if (!normalized || !state.node || !state.endpointId) return
     props.onSubmit(normalized)
   }
+
+  const canConnect = () => Boolean(getNormalizedCode(segments()) && state.node && state.endpointId)
 
   onMount(() => {
     syncFromCode(props.code)
@@ -146,118 +260,113 @@ export default function CodeInput(props: CodeInputProps) {
     props.onCodeChange(partialCode)
   })
 
+  onCleanup(() => {
+    if (copiedTimer) window.clearTimeout(copiedTimer)
+    if (linkCopiedTimer) window.clearTimeout(linkCopiedTimer)
+  })
+
+  const displayCode = () => getNormalizedCode(segments()) ?? joinPartial(segments())
+
   return (
     <section class="code-input card">
-      <label class="code-input-label" for="connection-code-slot">
-        Connection Code
-      </label>
-
-      <div class="code-input-group" role="group" aria-label="Connection code">
-        <div class={`code-input-segment ${focusedIndex() === 0 ? 'is-focused' : ''}`}>
-          <input
-            id="connection-code-slot"
-            ref={(el) => {
-              inputRefs[0] = el
-            }}
-            class="code-input-field"
-            inputmode="numeric"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck={false}
-            placeholder="0000"
-            value={segments()[0]}
-            onInput={(event) => handleSegmentInput(0, event.currentTarget.value)}
-            onPaste={handlePaste}
-            onFocus={() => setFocusedIndex(0)}
-            onBlur={() => setFocusedIndex(null)}
-          />
-        </div>
-
-        <span class="code-input-separator" aria-hidden="true">-</span>
-
-        <div class={`code-input-segment ${focusedIndex() === 1 ? 'is-focused' : ''}`}>
-          <input
-            ref={(el) => {
-              inputRefs[1] = el
-            }}
-            class="code-input-field"
-            inputmode="text"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck={false}
-            placeholder="word"
-            value={segments()[1]}
-            onInput={(event) => handleSegmentInput(1, event.currentTarget.value)}
-            onPaste={handlePaste}
-            onFocus={() => setFocusedIndex(1)}
-            onBlur={() => setFocusedIndex(null)}
-          />
-        </div>
-
-        <span class="code-input-separator" aria-hidden="true">-</span>
-
-        <div class={`code-input-segment ${focusedIndex() === 2 ? 'is-focused' : ''}`}>
-          <input
-            ref={(el) => {
-              inputRefs[2] = el
-            }}
-            class="code-input-field"
-            inputmode="text"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck={false}
-            placeholder="word"
-            value={segments()[2]}
-            onInput={(event) => handleSegmentInput(2, event.currentTarget.value)}
-            onPaste={handlePaste}
-            onFocus={() => setFocusedIndex(2)}
-            onBlur={() => setFocusedIndex(null)}
-          />
-        </div>
-
-        <span class="code-input-separator" aria-hidden="true">-</span>
-
-        <div class={`code-input-segment ${focusedIndex() === 3 ? 'is-focused' : ''}`}>
-          <input
-            ref={(el) => {
-              inputRefs[3] = el
-            }}
-            class="code-input-field"
-            inputmode="text"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck={false}
-            placeholder="word"
-            value={segments()[3]}
-            onInput={(event) => handleSegmentInput(3, event.currentTarget.value)}
-            onPaste={handlePaste}
-            onFocus={() => setFocusedIndex(3)}
-            onBlur={() => setFocusedIndex(null)}
-          />
+      <div class="code-input-header">
+        <label class="code-input-label" for="connection-code-slot">
+          Connection Code
+        </label>
+        <div class="code-input-primary-actions">
+          <button type="button" class="btn btn-subtle" onClick={props.onGenerate}>
+            <RefreshCcw size={12} />
+            New
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            onClick={handleConnect}
+            disabled={!canConnect()}
+          >
+            Connect
+          </button>
         </div>
       </div>
 
-      <div class="code-input-actions">
-        <button type="button" class="btn btn-subtle" onClick={props.onGenerate}>
-          New code
-        </button>
+      <div class="code-input-row">
+        <div class="code-input-group" role="group" aria-label="Connection code">
+          <div class="code-input-display" title={displayCode()} onClick={() => inputRefs[0]?.focus()}>
+            <For each={SEGMENT_INDEXES}>
+              {(index) => (
+                <>
+                  <span class={`code-input-segment ${focusedIndex() === index ? 'is-focused' : ''} ${!segments()[index] ? 'is-placeholder' : ''}`}>
+                    <input
+                      id={index === 0 ? 'connection-code-slot' : undefined}
+                      ref={(el) => {
+                        inputRefs[index] = el
+                      }}
+                      class="code-input-field"
+                      inputmode={index === 0 ? 'numeric' : 'text'}
+                      autocomplete="off"
+                      autocapitalize="off"
+                      spellcheck={false}
+                      placeholder={SEGMENT_PLACEHOLDERS[index]}
+                      value={segments()[index]}
+                      onInput={(event) => handleSegmentInput(index, event.currentTarget.value)}
+                      onPaste={handlePaste}
+                      onFocus={() => setFocusedIndex(index)}
+                      onBlur={() => setFocusedIndex(null)}
+                    />
+                  </span>
+                  <Show when={index < 3}>
+                    <span class="code-input-separator" aria-hidden="true">-</span>
+                  </Show>
+                </>
+              )}
+            </For>
+          </div>
+        </div>
         <button
           type="button"
-          class="btn btn-primary"
-          onClick={handleConnect}
+          class={`btn btn-ghost btn-icon code-input-copy ${copied() ? 'is-copied' : ''}`}
+          onClick={handleCopy}
           disabled={!getNormalizedCode(segments())}
+          aria-label={copied() ? 'Connection code copied' : 'Copy connection code'}
+          title={copied() ? 'Connection code copied' : 'Copy connection code'}
         >
-          Connect
+          {copied() ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+        <Show when={copied()}>
+          <span class="code-input-copied-tip" role="status" aria-live="polite">Copied</span>
+        </Show>
+      </div>
+
+      <div class="code-input-share-actions">
+        <button
+          type="button"
+          class={`btn btn-ghost ${linkCopied() ? 'is-copied' : ''}`}
+          onClick={() => void handleCopyLink()}
+          disabled={!directLink()}
+          aria-label={linkCopied() ? 'Connection link copied' : 'Copy connection link'}
+          title={linkCopied() ? 'Connection link copied' : 'Copy connection link'}
+        >
+          <Link2 size={14} />
+          {linkCopied() ? 'Link copied' : 'Copy link'}
         </button>
         <button
           type="button"
           class="btn btn-ghost"
-          onClick={handleCopy}
-          disabled={!getNormalizedCode(segments())}
+          onClick={() => setShowQr((open) => !open)}
+          disabled={!qrDataUrl()}
+          aria-expanded={showQr()}
+          aria-controls="code-input-qr-panel"
         >
-          Copy
+          <QrCode size={14} />
+          {showQr() ? 'Hide QR' : 'Show QR'}
         </button>
       </div>
+
+      <Show when={showQr() && qrDataUrl()}>
+        <div id="code-input-qr-panel" class="code-input-qr-panel">
+          <img src={qrDataUrl()!} alt="QR code for connection link" class="code-input-qr-image" />
+        </div>
+      </Show>
     </section>
   )
 }

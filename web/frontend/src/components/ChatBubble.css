@@ -13,21 +13,24 @@
 }
 
 .chat-bubble {
-  max-width: 75%;
+  max-width: min(75%, 620px);
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-xl);
+  border: 1px solid transparent;
   box-shadow: var(--shadow-sm);
+  color: var(--color-text);
 }
 
 .chat-bubble-sent {
-  background: var(--color-sent-bg);
-  color: var(--color-sent-text);
+  border-color: var(--color-message-sent-border);
+  background: var(--color-message-sent-bg);
+  box-shadow: 0 8px 24px var(--color-message-sent-shadow);
   border-bottom-right-radius: var(--radius-sm);
 }
 
 .chat-bubble-received {
-  background: var(--color-received-bg);
-  color: var(--color-received-text);
+  border-color: var(--color-message-received-border);
+  background: var(--color-message-received-bg);
   border-bottom-left-radius: var(--radius-sm);
 }
 
@@ -39,22 +42,210 @@
   margin-bottom: var(--space-2);
   font-size: var(--text-xs);
   line-height: var(--leading-tight);
-}
-
-.chat-bubble-peer,
-.chat-bubble-time {
-  opacity: 0.82;
+  color: var(--color-text-secondary);
 }
 
 .chat-bubble-peer {
-  font-weight: 600;
+  font-weight: 650;
 }
+
+.chat-bubble-time { color: var(--color-text-muted); }
 
 .chat-bubble-text {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: var(--leading-normal);
+}
+
+.chat-bubble-raw-card {
+  border: 1px solid color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
+  border-left: 4px solid color-mix(in srgb, var(--color-accent) 72%, #2f9e64);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent-subtle) 70%, #f4fff6);
+  overflow: hidden;
+}
+
+.chat-bubble-raw-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0.34rem 0.58rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--color-accent-subtle) 86%, #d9f2dd);
+}
+
+.chat-bubble-raw-label {
+  font-size: 0.87rem;
+  font-weight: 540;
+  letter-spacing: 0.01em;
+  text-transform: lowercase;
+  color: color-mix(in srgb, var(--color-accent) 76%, #2f9e64);
+}
+
+.chat-bubble-raw-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: color-mix(in srgb, var(--color-accent) 72%, #2f9e64);
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.chat-bubble-raw-copy:hover {
+  background: color-mix(in srgb, var(--color-accent-subtle) 90%, #dff5e1);
+  color: color-mix(in srgb, var(--color-accent) 84%, #2f9e64);
+}
+
+.chat-bubble-raw {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  line-height: var(--leading-normal);
+  color: color-mix(in srgb, var(--color-accent) 76%, #2f9e64);
+}
+
+.chat-bubble-markdown {
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.chat-bubble-markdown :is(p, ul, ol, pre, blockquote, h1, h2, h3, h4, h5, h6, hr) {
+  margin: 0 0 var(--space-2);
+}
+
+.chat-bubble-markdown :is(p, ul, ol, blockquote, pre, hr):last-child {
+  margin-bottom: 0;
+}
+
+.chat-bubble-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-2);
+  line-height: var(--leading-tight);
+}
+
+.chat-bubble-markdown h1 { font-size: 1.2rem; }
+.chat-bubble-markdown h2 { font-size: 1.12rem; }
+.chat-bubble-markdown h3 { font-size: 1.04rem; }
+.chat-bubble-markdown h4,
+.chat-bubble-markdown h5,
+.chat-bubble-markdown h6 { font-size: 1rem; }
+
+.chat-bubble-markdown :is(ul, ol) {
+  padding-left: 1.25rem;
+}
+
+.chat-bubble-markdown ul {
+  list-style: disc;
+}
+
+.chat-bubble-markdown ol {
+  list-style: decimal;
+  padding-left: 1.5rem;
+}
+
+.chat-bubble-markdown ul ul {
+  list-style: circle;
+}
+
+.chat-bubble-markdown ul ul ul {
+  list-style: square;
+}
+
+.chat-bubble-markdown li::marker {
+  color: color-mix(in srgb, var(--color-accent) 72%, var(--color-text-muted));
+}
+
+.chat-bubble-markdown ol li::marker {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.chat-bubble-markdown li + li {
+  margin-top: 0.25rem;
+}
+
+.chat-bubble-markdown li > :is(ul, ol) {
+  margin-top: 0.3rem;
+  margin-bottom: 0;
+}
+
+.chat-bubble-markdown blockquote {
+  padding: 0.35rem 0.75rem;
+  border-left: 3px solid color-mix(in srgb, var(--color-accent) 62%, transparent);
+  background: color-mix(in srgb, var(--color-bg-inset) 54%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+}
+
+.chat-bubble-markdown hr {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.chat-bubble-markdown pre {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg-inset) 70%, var(--color-surface));
+  overflow-x: auto;
+}
+
+.chat-bubble-markdown code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.chat-bubble-markdown :not(pre) > code {
+  padding: 0.05rem 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--color-bg-inset) 65%, transparent);
+}
+
+.chat-bubble-markdown a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.14em;
+}
+
+.chat-bubble-markdown a:hover {
+  color: var(--color-accent-hover);
+}
+
+.chat-bubble-markdown img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+}
+
+.chat-bubble-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: var(--space-2);
+  display: block;
+  overflow-x: auto;
+}
+
+.chat-bubble-markdown :is(th, td) {
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  padding: 0.3rem 0.45rem;
+  text-align: left;
+}
+
+.chat-bubble-markdown th {
+  background: color-mix(in srgb, var(--color-bg-muted) 74%, transparent);
 }
 
 .chat-bubble-file {

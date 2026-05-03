@@ -1,12 +1,13 @@
 import { Show, createEffect, createSignal, onCleanup } from 'solid-js'
 
 import { formatBytes, isImageMime } from '../lib/format'
+import type { MessageRenderMode } from '../lib/message-format'
 import { state } from '../lib/state'
 
 import './ComposeBar.css'
 
 type ComposeBarProps = {
-  onSendMessage: (text: string) => void
+  onSendMessage: (text: string, mode: MessageRenderMode) => void
   onSendFile: (file: File) => void
 }
 
@@ -14,6 +15,8 @@ export default function ComposeBar(props: ComposeBarProps) {
   const [text, setText] = createSignal('')
   const [attachedFile, setAttachedFile] = createSignal<File | null>(null)
   const [previewUrl, setPreviewUrl] = createSignal<string | null>(null)
+  const [dragDepth, setDragDepth] = createSignal(0)
+  const [messageMode, setMessageMode] = createSignal<MessageRenderMode>('plain')
 
   let textareaRef: HTMLTextAreaElement | undefined
   let fileInputRef: HTMLInputElement | undefined
@@ -22,6 +25,22 @@ export default function ComposeBar(props: ComposeBarProps) {
   const attachedIsImage = () => {
     const f = attachedFile()
     return f !== null && isImageMime(f.type)
+  }
+  const isDraggingFile = () => dragDepth() > 0
+  const selectedPeer = () => state.peers.find((peer) => peer.endpointId === state.selectedPeerId)
+  const selectedPeerType = () => selectedPeer()?.peerType
+  const modeSwitchDisabled = () => selectedPeerType() !== 'browser-web'
+
+  const effectiveMessageMode = (): MessageRenderMode => {
+    return modeSwitchDisabled() ? 'plain' : messageMode()
+  }
+
+  const cycleMessageMode = () => {
+    if (modeSwitchDisabled()) return
+    const current = messageMode()
+    if (current === 'plain') setMessageMode('markdown')
+    else if (current === 'markdown') setMessageMode('raw')
+    else setMessageMode('plain')
   }
 
   const resizeTextarea = () => {
@@ -65,7 +84,7 @@ export default function ComposeBar(props: ComposeBarProps) {
     if (!canSend()) return
     const trimmed = text().trim()
     const file = attachedFile()
-    if (trimmed) props.onSendMessage(trimmed)
+    if (trimmed) props.onSendMessage(trimmed, effectiveMessageMode())
     if (file) props.onSendFile(file)
     clearComposer()
   }
@@ -73,6 +92,36 @@ export default function ComposeBar(props: ComposeBarProps) {
   const handleFileChange = (event: Event) => {
     const input = event.currentTarget as HTMLInputElement
     const file = input.files?.[0] ?? null
+    if (file) attachFile(file)
+  }
+
+  const hasDraggedFiles = (event: DragEvent) => {
+    return Array.from(event.dataTransfer?.types ?? []).includes('Files')
+  }
+
+  const handleDragEnter = (event: DragEvent) => {
+    if (!state.selectedPeerId || !hasDraggedFiles(event)) return
+    event.preventDefault()
+    setDragDepth((value) => value + 1)
+  }
+
+  const handleDragOver = (event: DragEvent) => {
+    if (!state.selectedPeerId || !hasDraggedFiles(event)) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleDragLeave = (event: DragEvent) => {
+    if (!state.selectedPeerId || !hasDraggedFiles(event)) return
+    event.preventDefault()
+    setDragDepth((value) => Math.max(0, value - 1))
+  }
+
+  const handleDrop = (event: DragEvent) => {
+    if (!state.selectedPeerId || !hasDraggedFiles(event)) return
+    event.preventDefault()
+    setDragDepth(0)
+    const file = event.dataTransfer?.files?.[0]
     if (file) attachFile(file)
   }
 
@@ -106,9 +155,18 @@ export default function ComposeBar(props: ComposeBarProps) {
   })
 
   return (
-    <div class={`compose-bar ${!state.selectedPeerId ? 'is-disabled' : ''}`}>
+    <div
+      class={`compose-bar ${!state.selectedPeerId ? 'is-disabled' : ''} ${isDraggingFile() ? 'is-dragging-file' : ''}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <Show when={!state.selectedPeerId}>
         <div class="compose-bar-hint">Select a peer to start</div>
+      </Show>
+      <Show when={state.selectedPeerId && isDraggingFile()}>
+        <div class="compose-bar-hint compose-bar-drop-hint">Drop to attach file</div>
       </Show>
 
       <div class="compose-bar-shell">
@@ -116,6 +174,7 @@ export default function ComposeBar(props: ComposeBarProps) {
           ref={fileInputRef}
           class="sr-only"
           type="file"
+          accept="*/*"
           onChange={handleFileChange}
           tabIndex={-1}
         />
@@ -157,17 +216,62 @@ export default function ComposeBar(props: ComposeBarProps) {
             )}
           </Show>
 
-          <textarea
-            ref={textareaRef}
-            class="compose-bar-textarea"
-            rows={1}
-            value={text()}
-            placeholder={state.selectedPeerId ? 'Write a message' : 'Select a peer to start'}
-            disabled={!state.selectedPeerId}
-            onInput={(event) => setText(event.currentTarget.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-          />
+          <div class="compose-bar-text-row">
+            <textarea
+              ref={textareaRef}
+              class="compose-bar-textarea"
+              rows={1}
+              value={text()}
+              placeholder={state.selectedPeerId ? 'Write a message' : 'Select a peer to start'}
+              disabled={!state.selectedPeerId}
+              onInput={(event) => setText(event.currentTarget.value)}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+            />
+
+            <button
+              type="button"
+              class="compose-bar-mode"
+              onClick={cycleMessageMode}
+              disabled={!state.selectedPeerId || modeSwitchDisabled()}
+              aria-label={`Message mode: ${effectiveMessageMode()}`}
+              title={
+                !state.selectedPeerId
+                  ? 'Select a peer first'
+                  : modeSwitchDisabled()
+                    ? 'Formatting modes are browser-only'
+                    : `Message mode: ${messageMode()}`
+              }
+            >
+              <Show
+                when={effectiveMessageMode() === 'plain'}
+                fallback={
+                  <Show
+                    when={effectiveMessageMode() === 'markdown'}
+                    fallback={
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <polyline points="9 8 4 12 9 16" />
+                        <polyline points="15 8 20 12 15 16" />
+                      </svg>
+                    }
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <line x1="8" y1="5" x2="6" y2="19" />
+                      <line x1="14" y1="5" x2="12" y2="19" />
+                      <line x1="4" y1="10" x2="18" y2="10" />
+                      <line x1="3" y1="14" x2="17" y2="14" />
+                    </svg>
+                  </Show>
+                }
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="5" y1="8" x2="19" y2="8" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                  <line x1="5" y1="16" x2="13" y2="16" />
+                </svg>
+              </Show>
+            </button>
+          </div>
         </div>
 
         <button

@@ -1,11 +1,14 @@
 import { Show, For, createSignal, createEffect } from 'solid-js'
+import { Activity, ChevronDown, Copy, Fingerprint, RadioTower, Settings, Trash2 } from 'lucide-solid'
 
 import { state, addToast } from '../lib/state'
+import packageInfo from '../../package.json'
 
 import './SidebarSettings.css'
 
 const RENDEZVOUS_URL_STORAGE_KEY = 'altair-vega:rendezvous-url'
 const RENDEZVOUS_HISTORY_KEY = 'altair-vega:rendezvous-history'
+const RELEASE_URL = `https://github.com/EL-File4138/Altair-Vega/releases/tag/v${packageInfo.version}`
 
 /**
  * Compile-time default rendezvous URL.
@@ -15,30 +18,6 @@ const RENDEZVOUS_HISTORY_KEY = 'altair-vega:rendezvous-history'
 const DEFAULT_RENDEZVOUS_URL = import.meta.env.VITE_DEFAULT_RENDEZVOUS_URL ?? ''
 
 type RendezvousOption = 'same-origin' | 'webrtc-local' | 'custom'
-
-function ChevronIcon(props: { open: boolean }) {
-  return (
-    <svg class={`sidebar-card__chevron ${props.open ? 'is-open' : ''}`} viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M7 8l3 3 3-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-    </svg>
-  )
-}
-
-function CopyIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M7 7.5h7.5v8H7zm-1.5 3H5V4.5h7.5V5" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.6" />
-    </svg>
-  )
-}
-
-function TrashIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M4.5 5.5h7m-6 0v6m2.5-6v6m2.5-6v6M5.5 5.5l.4-1.2h4.2l.4 1.2m-5.5 0 .4 7.2h4.2l.4-7.2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" />
-    </svg>
-  )
-}
 
 function loadHistory(): string[] {
   try {
@@ -187,15 +166,21 @@ export default function SidebarSettings() {
   return (
     <div class="sidebar-card">
       <button class="sidebar-card__header" type="button" onClick={() => setOpen(!open())}>
-        <span class="sidebar-card__title">Settings</span>
-        <ChevronIcon open={open()} />
+        <span class="sidebar-card__title">
+          <Settings size={15} />
+          Settings
+        </span>
+        <ChevronDown class={`sidebar-card__chevron ${open() ? 'is-open' : ''}`} size={16} />
       </button>
 
       <Show when={open()}>
         <div class="sidebar-card__body sidebar-settings__body">
           {/* Rendezvous URL selector */}
           <div class="sidebar-settings__section">
-            <div class="sidebar-settings__label">Rendezvous Service</div>
+            <div class="sidebar-settings__label">
+              <RadioTower size={14} />
+              Rendezvous Service
+            </div>
 
             <div class="rendezvous-options" role="radiogroup" aria-label="Rendezvous service">
               <label class="rendezvous-option" classList={{ 'rendezvous-option--selected': selectedOption() === 'same-origin' }}>
@@ -258,7 +243,7 @@ export default function SidebarSettings() {
                             </Show>
                             <Show when={!isDefault()}>
                               <button class="btn btn-ghost rendezvous-history__remove" type="button" onClick={() => handleRemoveHistory(url)} aria-label={`Remove ${url}`}>
-                                <TrashIcon />
+                                <Trash2 size={14} />
                               </button>
                             </Show>
                           </div>
@@ -273,20 +258,36 @@ export default function SidebarSettings() {
 
           {/* Debug info */}
           <div class="sidebar-settings__section">
-            <div class="sidebar-settings__label">Endpoint ID</div>
+            <div class="sidebar-settings__label">
+              <Fingerprint size={14} />
+              Endpoint ID
+            </div>
             <div class="sidebar-settings__value sidebar-settings__value--mono">
               <code>{state.endpointId || 'Not assigned'}</code>
               <button class="btn btn-ghost btn-sm sidebar-settings__copy" type="button" onClick={() => void handleCopyEndpointId()} disabled={!state.endpointId}>
-                <CopyIcon />
+                <Copy size={14} />
                 {copied() ? 'Copied' : 'Copy'}
               </button>
             </div>
           </div>
 
           <div class="sidebar-settings__section">
-            <div class="sidebar-settings__label">Status</div>
+            <div class="sidebar-settings__label">
+              <Activity size={14} />
+              Status
+            </div>
             <div class="sidebar-settings__value">{state.connectionState} / WASM: {wasmStatus()}</div>
           </div>
+
+          <footer class="sidebar-settings__footer" aria-label="Project links">
+            <a href={RELEASE_URL} target="_blank" rel="noreferrer">v{packageInfo.version}</a>
+            <span aria-hidden="true">|</span>
+            <a href="https://github.com/EL-File4138/Altair-Vega" target="_blank" rel="noreferrer">GitHub</a>
+            <span aria-hidden="true">|</span>
+            <a href="https://github.com/EL-File4138" target="_blank" rel="noreferrer">Author</a>
+            <span aria-hidden="true">|</span>
+            <a href="https://github.com/sponsors/EL-File4138" target="_blank" rel="noreferrer">Donate</a>
+          </footer>
         </div>
       </Show>
     </div>

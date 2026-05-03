@@ -2,7 +2,7 @@
   position: fixed;
   right: var(--space-4);
   bottom: var(--space-4);
-  z-index: 1200;
+  z-index: 1300;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -13,29 +13,32 @@
 .toast-card {
   display: grid;
   grid-template-columns: auto 1fr auto;
-  align-items: start;
+  align-items: center;
   gap: var(--space-3);
   padding: var(--space-3);
   border: 1px solid var(--color-border);
+  min-height: 48px;
   border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--color-surface-raised) 92%, transparent);
   box-shadow: var(--shadow-lg);
   backdrop-filter: blur(12px);
   pointer-events: auto;
   animation: toast-enter var(--duration-slow) var(--ease-out);
+  transform: translateZ(0);
   transition: opacity var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+  will-change: transform;
 }
 
 .toast-card--closing {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(6px) scale(0.98);
 }
 
 .toast-card__icon {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
-  margin-top: 1px;
+  align-self: center;
 }
 
 .toast-card__icon svg {
@@ -44,6 +47,8 @@
 }
 
 .toast-card__text {
+  min-width: 0;
+  align-self: center;
   color: var(--color-text);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
@@ -52,6 +57,8 @@
 .toast-card__dismiss {
   min-width: 28px;
   min-height: 28px;
+  width: 28px;
+  height: 28px;
   padding: 6px;
   color: var(--color-text-muted);
 }

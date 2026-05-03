@@ -2,21 +2,25 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   width: 100%;
-  max-width: 1120px;
+  max-width: 1240px;
   margin: 0 auto;
-  padding: 0 var(--space-4);
+  gap: var(--space-2);
+  padding: var(--space-2);
   overflow: hidden;
+  background: var(--color-bg-gradient);
 }
 
 .app-main {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: 304px minmax(0, 1fr);
   gap: var(--space-4);
   flex: 1;
   min-height: 0;
   padding-bottom: var(--space-4);
   position: relative;
+  overflow: hidden;
 }
 
 /* Sidebar: scrollable, split into top (code+peer) and bottom (files+settings) */
@@ -27,13 +31,16 @@
   min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  gap: var(--space-3);
+  padding-right: 2px;
 }
 
 .app-sidebar__top {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  flex-shrink: 0;
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .app-sidebar__bottom {
@@ -46,14 +53,96 @@
 
 /* Chat panel */
 .app-chat {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-module);
   background: var(--color-surface);
   overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.app-chat__drop-surface {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.app-chat__drop-surface > .chat-thread {
+  transition: filter var(--duration-normal) var(--ease-out),
+              opacity var(--duration-normal) var(--ease-out);
+}
+
+.app-chat.is-dragging-file .app-chat__drop-surface > .chat-thread {
+  filter: blur(3px);
+  opacity: 0.58;
+}
+
+.app-chat__drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  pointer-events: none;
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.app-chat__drop-card {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 280px;
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, var(--color-border));
+  border-radius: var(--radius-module);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+  color: var(--color-text);
+  text-align: center;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(14px);
+}
+
+.app-chat__drop-card strong {
+  font-size: var(--text-base);
+  font-weight: 700;
+}
+
+.app-chat__drop-card span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+@media (min-width: 769px) {
+  .app-layout {
+    gap: var(--space-4);
+    padding: var(--space-3);
+  }
+
+  .app-main {
+    grid-template-columns: 288px minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+}
+
+@media (min-width: 901px) {
+  .app-layout {
+    padding: var(--space-4);
+  }
+
+  .app-main {
+    grid-template-columns: 304px minmax(0, 1fr);
+    gap: var(--space-4);
+  }
 }
 
 /* Mobile backdrop (hidden on desktop) */
@@ -76,18 +165,34 @@
   /* Sidebar is an overlay on mobile */
   .app-sidebar {
     position: fixed;
-    top: 56px; /* below header */
-    left: 0;
-    bottom: 0;
+    top: 74px;
+    left: var(--space-2);
+    bottom: var(--space-2);
+    height: auto;
     width: 320px;
-    max-width: 85vw;
+    max-width: calc(100vw - var(--space-4));
     z-index: 100;
-    background: var(--color-bg);
-    border-right: 1px solid var(--color-border);
-    padding: var(--space-3);
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0;
     transform: translateX(-100%);
     transition: transform var(--duration-normal) var(--ease-out);
     overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .app-sidebar__top {
+    flex: 0 0 auto;
+    min-height: auto;
+  }
+
+  .app-sidebar__bottom {
+    margin-top: 0;
+    padding-top: 0;
   }
 
   .app-sidebar.is-open {
@@ -98,11 +203,19 @@
     display: block;
     position: fixed;
     inset: 0;
-    top: 56px;
+    top: 0;
     z-index: 99;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.34);
     border: none;
     cursor: default;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-normal) var(--ease-out);
+  }
+
+  .sidebar-backdrop.is-open {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .app-chat {

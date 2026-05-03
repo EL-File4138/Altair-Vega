@@ -24,7 +24,6 @@ use iroh_blobs::{
 use iroh_tickets::endpoint::EndpointTicket;
 use notify::{EventKind, RecursiveMode, Watcher};
 use qrcode::{Color, QrCode, render::unicode};
-use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -4287,7 +4286,7 @@ fn room_url_for_code(
 
 fn random_peer_id(prefix: &str) -> String {
     let mut random = [0u8; 8];
-    OsRng.fill_bytes(&mut random);
+    rand::fill(&mut random);
     format!("{prefix}-{:016x}", u64::from_be_bytes(random))
 }
 

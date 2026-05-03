@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use rand::{RngCore, rngs::OsRng};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -36,7 +35,7 @@ impl DisposableRuntime {
             .with_context(|| format!("create runtime parent {}", parent.display()))?;
 
         let mut suffix_bytes = [0u8; 8];
-        OsRng.fill_bytes(&mut suffix_bytes);
+        rand::fill(&mut suffix_bytes);
         let suffix = u64::from_be_bytes(suffix_bytes);
         let root = parent.join(format!("altair-vega-{prefix}-{suffix:016x}"));
         fs::create_dir_all(&root)

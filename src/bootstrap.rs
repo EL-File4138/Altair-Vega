@@ -1,5 +1,4 @@
 use iroh_tickets::endpoint::EndpointTicket;
-use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +44,7 @@ impl IrohBootstrapBundle {
         expires_at_unix_secs: u64,
     ) -> Self {
         let mut session_nonce = [0u8; 16];
-        OsRng.fill_bytes(&mut session_nonce);
+        rand::fill(&mut session_nonce);
         Self::with_nonce(
             endpoint_ticket,
             capabilities,

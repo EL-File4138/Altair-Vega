@@ -1,11 +1,10 @@
 import { defineConfig } from 'vite'
 import wasm from 'vite-plugin-wasm'
-import topLevelAwait from 'vite-plugin-top-level-await'
 import solidPlugin from 'vite-plugin-solid'
 import { createDevRendezvousPlugin } from './dev-rendezvous'
 
 export default defineConfig({
-  plugins: [wasm(), topLevelAwait(), solidPlugin(), createDevRendezvousPlugin()],
+  plugins: [wasm(), solidPlugin(), createDevRendezvousPlugin()],
   build: {
     target: 'esnext',
   },

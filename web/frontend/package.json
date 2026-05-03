@@ -22,15 +22,14 @@
     "altair-vega-browser": "file:./pkg",
     "dompurify": "^3.3.0",
     "lucide-solid": "^1.14.0",
-    "marked": "^17.0.1",
+    "marked": "^18.0.3",
     "qrcode-generator": "^2.0.4",
     "solid-js": "^1.9.12"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "vite": "^7.1.11",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10",
     "vite-plugin-solid": "^2.11.12",
-    "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.5.0",
     "ws": "^8.18.3"
   }

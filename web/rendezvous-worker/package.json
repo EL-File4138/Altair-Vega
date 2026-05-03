@@ -16,7 +16,7 @@
     "deploy:dry-run": "wrangler deploy --dry-run"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "wrangler": "^4.18.0"
+    "typescript": "^6.0.3",
+    "wrangler": "^4.87.0"
   }
 }

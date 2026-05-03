@@ -4,7 +4,6 @@ use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Payload},
 };
-use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::time::{Duration, SystemTime};
@@ -140,7 +139,7 @@ impl EstablishedPairing {
         let aad = self.code.normalized();
         let cipher = self.intro_cipher();
         let mut nonce = [0u8; 24];
-        OsRng.fill_bytes(&mut nonce);
+        rand::fill(&mut nonce);
 
         let ciphertext = cipher
             .encrypt(

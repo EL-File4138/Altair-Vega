@@ -12,7 +12,6 @@ use iroh_blobs::{
     BlobFormat, BlobsProtocol, Hash, HashAndFormat, store::fs::FsStore, ticket::BlobTicket,
 };
 use iroh_tickets::endpoint::EndpointTicket;
-use rand::{RngCore, rngs::OsRng};
 use std::{
     fs,
     io::{Read, Seek, SeekFrom},
@@ -1537,7 +1536,7 @@ fn unix_secs(value: SystemTime) -> u64 {
 
 fn make_temp_dir(prefix: &str) -> Result<PathBuf> {
     let mut random = [0u8; 8];
-    OsRng.fill_bytes(&mut random);
+    rand::fill(&mut random);
     let suffix = u64::from_be_bytes(random);
     let path = std::env::temp_dir().join(format!("altair-vega-{prefix}-{suffix:016x}"));
     fs::create_dir_all(&path).with_context(|| format!("create temp dir at {}", path.display()))?;

@@ -1,4 +1,4 @@
-use rand::{Rng, rngs::OsRng};
+use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
@@ -32,17 +32,17 @@ impl ShortCode {
     }
 
     pub fn generate() -> Self {
-        let mut rng = OsRng;
+        let mut rng = rand::rng();
         Self::generate_with_rng(&mut rng)
     }
 
     pub fn generate_with_rng(rng: &mut impl Rng) -> Self {
         Self {
-            slot: rng.gen_range(100..10_000),
+            slot: rng.random_range(100..10_000),
             words: [
-                rng.gen_range(0..=u8::MAX),
-                rng.gen_range(0..=u8::MAX),
-                rng.gen_range(0..=u8::MAX),
+                rng.random_range(0..=u8::MAX),
+                rng.random_range(0..=u8::MAX),
+                rng.random_range(0..=u8::MAX),
             ],
         }
     }

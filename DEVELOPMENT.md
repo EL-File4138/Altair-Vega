@@ -5,10 +5,10 @@
 Altair Vega has three release surfaces:
 
 - Native CLI: Rust binary for pairing, text transfer, file transfer, browser bridging, and two-peer folder sync.
-- Browser app: static SolidJS frontend plus a Rust/WASM peer package built with `wasm-pack`.
+- Browser app: installable static SolidJS/PWA frontend plus a Rust/WASM peer package built with `wasm-pack`.
 - Rendezvous Worker: Cloudflare Worker/Durable Object WebSocket room service used only for peer discovery and signaling.
 
-Native peers use `iroh` directly for endpoint connections, local discovery, file transfer, and native sync. Browser peers use the WASM peer package for browser-to-browser transfer behavior and the frontend rendezvous client for WebSocket signaling. The rendezvous Worker coordinates room membership and forwards signaling messages; it does not persist room contents or transferred payloads.
+Native peers use `iroh` directly for endpoint connections, local discovery, file transfer, and native sync. Browser peers use the WASM peer package for browser-to-browser transfer behavior and the frontend rendezvous client for WebSocket signaling. The rendezvous Worker coordinates room membership and forwards signaling messages; it does not persist room contents or transferred payloads. The browser shell is served statically and can be cached by its service worker; app updates are fetched in the background and take effect on the next refresh/new page lifecycle.
 
 High-level data flow:
 
@@ -25,7 +25,7 @@ High-level data flow:
 - `src/sync.rs`: native filesystem scan, manifest diff/merge, and local apply policy.
 - `src/sync_docs.rs`: docs-backed native sync host/follow/join behavior.
 - `web/browser-wasm/`: Rust/WASM browser peer package exposed to the frontend.
-- `web/frontend/`: SolidJS static web app, browser state, and rendezvous client.
+- `web/frontend/`: SolidJS static/PWA web app, browser state, message rendering, and rendezvous client.
 - `web/rendezvous-worker/`: Cloudflare Worker and Durable Object rendezvous service.
 - `scripts/`: disposable native launcher scripts for POSIX and PowerShell.
 
@@ -82,6 +82,8 @@ Run the frontend dev server:
 npm run dev --prefix web/frontend
 ```
 
+The default frontend dev command first rebuilds the browser WASM package in dev mode, then starts Vite and the local rendezvous Worker together. Use `npm run dev:no-worker --prefix web/frontend` when you want Vite only and are pointing the app at an already-running rendezvous endpoint.
+
 Run the rendezvous Worker locally:
 
 ```sh
@@ -119,6 +121,8 @@ npm run dev --prefix web/rendezvous-worker
 ```
 
 Release validation still requires manual drills on actual target systems for macOS, Windows, browser matrix coverage, launcher behavior, reconnect behavior, and long-running native sync.
+
+PWA/service-worker behavior should be validated in a browser application panel after deployment: confirm installability, cached-first startup, background update fetch, and next-refresh activation semantics.
 
 ## Release Discipline
 

@@ -4,7 +4,7 @@ This guide is for operators who want to host their own Altair Vega browser app a
 
 Altair Vega's hosted deployment has two public parts:
 
-- A static browser app built from `web/frontend`.
+- A static installable browser app built from `web/frontend`.
 - A Cloudflare Worker with Durable Objects built from `web/rendezvous-worker`.
 
 The rendezvous service only coordinates peer discovery and signaling. It should not store transferred messages, files, sync data, private keys, or long-lived user state.
@@ -68,6 +68,19 @@ The Worker project lives in `web/rendezvous-worker`.
 
 Review `web/rendezvous-worker/wrangler.toml` and set the Worker name, account configuration, and route/custom domain according to your Cloudflare setup.
 
+For Cloudflare Workers Dashboard Git integration, Use these Workers Builds settings:
+
+- Production branch: `main`
+- Root directory: `web/rendezvous-worker`
+- Build command: `npm ci && npm run check`
+- Deploy command: `npm run deploy`
+- Build variables/secrets: none required by this Worker.
+
+Recommended build watch paths for the monorepo:
+
+- `web/rendezvous-worker/**`
+- `web/rendezvous-protocol.ts`
+
 Run a local Worker during setup:
 
 ```sh
@@ -115,7 +128,17 @@ Publish the generated static files from:
 web/frontend/dist/
 ```
 
-Any static host is acceptable if it serves the files over HTTPS and preserves the generated asset paths.
+Any static host is acceptable if it serves the files over HTTPS and preserves the generated asset paths. HTTPS is required for production service-worker/PWA behavior.
+
+### Cloudflare Pages
+
+When configuring Cloudflare Pages through the Dashboard, use these settings:
+
+- Build command: `npm install && npm run build:wasm:release && npm run build`
+- Output directory: `web/frontend/dist`
+- Root directory: `web/frontend`
+- Production branch: `main`
+- Environment variable: `VITE_DEFAULT_RENDEZVOUS_URL` to your Worker deployment.
 
 ## Native Binary Defaults
 
@@ -136,6 +159,7 @@ altair-vega pair --room-url wss://your-worker.example.com/__altair_vega_rendezvo
 After deploying both the Worker and frontend:
 
 - Open the hosted browser app over HTTPS.
+- Confirm the browser app is installable and that `manifest.webmanifest`/`sw.js` are served from the deployed path.
 - Start a pairing flow from the browser app and confirm it shows a short code.
 - Run a native command using the same Worker URL, such as `altair-vega pair --room-url <URL> <CODE>`.
 - Confirm the peers connect or report a clear room/connection error.
@@ -149,6 +173,7 @@ After deploying both the Worker and frontend:
 - Treat Cloudflare account tokens and deployment credentials as secrets.
 - Do not add persistent storage of transfer payloads to the rendezvous service.
 - Rebuild and republish the browser app when changing the default rendezvous URL.
+- When republishing static files, expect already-open clients to keep using their current cached app shell until refresh/new lifecycle.
 - Prefer a custom domain for production so native and browser users can rely on a stable endpoint.
 
 ## Troubleshooting

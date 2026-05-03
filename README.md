@@ -66,6 +66,7 @@ Cross-platform launcher forms:
 ## Features
 
 - Send text messages between paired peers.
+- Use plain, Markdown, or raw preformatted browser-to-browser message rendering; native peers receive plain text only.
 - Send and resume file transfers between native and browser peers.
 - Sync a native folder between two peers with explicit bidirectional `--join` mode.
 - Prefer native same-LAN discovery when available, with short-code rendezvous as fallback.

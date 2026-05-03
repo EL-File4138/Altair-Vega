@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
 
 jobs:
   rust:
@@ -24,6 +24,8 @@ jobs:
   web:
     name: Web
     runs-on: ubuntu-latest
+    env:
+      VITE_DEFAULT_RENDEZVOUS_URL: wss://tools.elfile4138.moe/altair-vega/__altair_vega_rendezvous
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -36,12 +38,19 @@ jobs:
           cache-dependency-path: web/frontend/package-lock.json
       - uses: Swatinem/rust-cache@v2
       - run: cargo install wasm-pack --locked
-      - run: npm ci
-        working-directory: web/frontend
       - run: npm run build:wasm:release
+        working-directory: web/frontend
+      - run: npm ci
         working-directory: web/frontend
       - run: npm run build
         working-directory: web/frontend
+
+      - name: Deploy Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: npx wrangler pages deploy web/frontend/dist --project-name=altair-vega --branch=${{ github.ref_name }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
   worker:
     name: Rendezvous Worker

@@ -47,9 +47,9 @@ jobs:
           cache-dependency-path: web/frontend/package-lock.json
       - uses: Swatinem/rust-cache@v2
       - run: cargo install wasm-pack --locked
-      - run: npm ci
-        working-directory: web/frontend
       - run: npm run build:wasm:release
+        working-directory: web/frontend
+      - run: npm ci
         working-directory: web/frontend
       - run: npm run build
         working-directory: web/frontend

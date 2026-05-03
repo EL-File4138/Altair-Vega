@@ -68,11 +68,11 @@ The Worker project lives in `web/rendezvous-worker`.
 
 Review `web/rendezvous-worker/wrangler.toml` and set the Worker name, account configuration, and route/custom domain according to your Cloudflare setup.
 
-For Cloudflare Workers Dashboard Git integration, Use these Workers Builds settings:
+For Cloudflare Workers Dashboard Git integration, use these Workers Builds settings:
 
-- Production branch: `main`
+- Production branch: `master`
 - Root directory: `web/rendezvous-worker`
-- Build command: `npm ci && npm run check`
+- Build command: `npm run check`
 - Deploy command: `npm run deploy`
 - Build variables/secrets: none required by this Worker.
 
@@ -132,13 +132,20 @@ Any static host is acceptable if it serves the files over HTTPS and preserves th
 
 ### Cloudflare Pages
 
-When configuring Cloudflare Pages through the Dashboard, use these settings:
+Cloudflare Pages should use Direct Upload from CI rather than Pages Git builds because the browser build requires Rust/Cargo for `wasm-pack`.
 
-- Build command: `npm install && npm run build:wasm:release && npm run build`
-- Output directory: `web/frontend/dist`
-- Root directory: `web/frontend`
-- Production branch: `main`
-- Environment variable: `VITE_DEFAULT_RENDEZVOUS_URL` to your Worker deployment.
+Create or keep a Pages project, then add these GitHub Actions secrets:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN` with Cloudflare Pages edit permission
+
+The repository workflow builds and deploys Pages on pushes to `master` with:
+
+- `npm run build:wasm:release --prefix web/frontend`
+- `VITE_DEFAULT_RENDEZVOUS_URL=wss://your-worker.example.com/__altair_vega_rendezvous --prefix web/frontend`
+- `wrangler pages deploy web/frontend/dist --project-name=<your-pages-project-name> --branch=master`
+
+For another deployment target, set `VITE_DEFAULT_RENDEZVOUS_URL` to that target's Worker rendezvous URL in the workflow before the frontend build step.
 
 ## Native Binary Defaults
 

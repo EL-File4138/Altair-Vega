@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail, ensure};
 use futures_util::StreamExt;
 use iroh::{
     Endpoint,
-    address_lookup::{MdnsAddressLookup, UserData},
+    address_lookup::UserData,
     endpoint::{Connection, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
@@ -27,6 +27,7 @@ use iroh_docs::{
     store::Query,
 };
 use iroh_gossip::{ALPN as GOSSIP_ALPN, net::Gossip};
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use std::{fs, path::Path, str::FromStr, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
 

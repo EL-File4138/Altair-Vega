@@ -12,15 +12,11 @@ use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
-use iroh::{
-    Endpoint,
-    address_lookup::{DiscoveryEvent, MdnsAddressLookup, UserData},
-    endpoint::presets,
-    protocol::Router,
-};
+use iroh::{Endpoint, address_lookup::UserData, endpoint::presets, protocol::Router};
 use iroh_blobs::{
     BlobFormat, BlobsProtocol, HashAndFormat, store::fs::FsStore, ticket::BlobTicket,
 };
+use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use iroh_tickets::endpoint::EndpointTicket;
 use notify::{EventKind, RecursiveMode, Watcher};
 use qrcode::{Color, QrCode, render::unicode};

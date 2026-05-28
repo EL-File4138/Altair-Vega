@@ -1,3 +1,7 @@
 /target
 .env
 .playwright-cli/
+.wrangler/
+docs/agentic-working/
+AGENTS.md
+web/deploy-personal.sh

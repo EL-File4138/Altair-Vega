@@ -1,5 +1,5 @@
 const CACHE_NAME = 'altair-vega-web-v1'
-const CORE_ASSETS = ['./', './index.html', './manifest.webmanifest', './logo.png']
+const CORE_ASSETS = ['./', './index.html', './manifest.webmanifest', './logo.avif']
 const INDEX_URL = new URL('./index.html', self.registration.scope).toString()
 
 self.addEventListener('install', (event) => {

@@ -34,7 +34,7 @@ export default function ChatThread() {
       >
         <div class="chat-thread-scroll" ref={containerRef}>
           <div class="chat-thread-list">
-            <For each={messages()}>{(message) => <ChatBubble message={message} />}</For>
+            <For each={messages()}>{(message) => <ChatBubble message={message} localEndpointId={state.endpointId} />}</For>
           </div>
         </div>
       </Show>

@@ -10,8 +10,6 @@ import type {
 import type { WasmBrowserNode } from 'altair-vega-browser'
 import { generate_short_code } from './short-code'
 
-const LAST_CODE_STORAGE_KEY = 'altair-vega:last-code'
-
 export type AppState = {
   node: WasmBrowserNode | null
   endpointId: string
@@ -37,7 +35,7 @@ function getInitialTheme(): 'light' | 'dark' {
 const [state, setState] = createStore<AppState>({
   node: null,
   endpointId: '',
-  code: window.localStorage.getItem(LAST_CODE_STORAGE_KEY) ?? generate_short_code(),
+  code: generate_short_code(),
   connectionState: 'starting',
   roomConnection: null,
   peers: [],
@@ -64,11 +62,10 @@ export function setCode(code: string) {
 
 export function saveCode(code: string) {
   setState('code', code)
-  window.localStorage.setItem(LAST_CODE_STORAGE_KEY, code)
 }
 
 export function clearSavedCode() {
-  window.localStorage.removeItem(LAST_CODE_STORAGE_KEY)
+  setState('code', generate_short_code())
 }
 
 export function setConnectionState(s: ConnectionState) {

@@ -13,10 +13,12 @@ import './ChatBubble.css'
 
 type ChatBubbleProps = {
   message: ChatMessage
+  localEndpointId: string
 }
 
 export default function ChatBubble(props: ChatBubbleProps) {
   const isSent = () => props.message.direction === 'sent'
+  const authorEndpointId = () => isSent() ? props.localEndpointId : props.message.peerEndpointId
   const [rawCopied, setRawCopied] = createSignal(false)
   let rawCopiedTimer = 0
 
@@ -57,7 +59,7 @@ export default function ChatBubble(props: ChatBubbleProps) {
         classList={{ 'chat-bubble-sent': isSent(), 'chat-bubble-received': !isSent() }}
       >
         <header class="chat-bubble-meta">
-          <span class="chat-bubble-peer">{peerName(props.message.peerEndpointId)}</span>
+          <span class="chat-bubble-peer">{peerName(authorEndpointId())}</span>
           <span class="chat-bubble-time">{formatTime(props.message.timestamp)}</span>
         </header>
 

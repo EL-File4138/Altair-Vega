@@ -63,6 +63,16 @@ Cross-platform launcher forms:
 - **Windows PowerShell:** `& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.ps1'))) -- <altair-vega args>`
 - **Custom repo/binary:** set `ALTAIR_VEGA_GITHUB_REPO=<OWNER>/<REPO>`, or pass `--url <binary-url>` / `-Url <binary-url>`.
 
+## Install
+
+Persistent installation currently uses Cargo against the Git repository:
+
+```sh
+cargo install --git https://github.com/EL-File4138/Altair-Vega.git altair-vega
+```
+
+This builds the native CLI locally and installs `altair-vega` into Cargo's binary directory, usually `~/.cargo/bin`. Linux distribution packaging may be considered in the future.
+
 ## Features
 
 - Send text messages between paired peers.
@@ -98,7 +108,7 @@ Use `altair-vega help` for the complete command manual. For common work, start w
 
 Altair-Vega saves the latest short code or naked ticket in `.altair-pair/pair-state.json`, under the runtime state root when `ALTAIR_VEGA_RUNTIME_ROOT` is set. Commands that omit `CODE` or a naked ticket reuse that state when possible.
 
-The default rendezvous URL is compiled into the binary. Set `ALTAIR_VEGA_DEFAULT_RENDEZVOUS=<URL>` at build time to change the native default, or pass `--room-url <URL>` at runtime.
+Debug native builds default to the local development rendezvous URL. Release native builds, including `cargo install --git`, default to the hosted rendezvous URL. Set `ALTAIR_VEGA_DEFAULT_RENDEZVOUS=<URL>` at build time to change the native default, or pass `--room-url <URL>` at runtime.
 
 Browser builds use `VITE_DEFAULT_RENDEZVOUS_URL` at build time. See `.env.example` for safe placeholder values.
 

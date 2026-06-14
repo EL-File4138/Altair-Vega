@@ -40,7 +40,8 @@ mod sync_docs;
 
 const DEFAULT_RENDEZVOUS_URL: &str = match option_env!("ALTAIR_VEGA_DEFAULT_RENDEZVOUS") {
     Some(value) => value,
-    None => "ws://127.0.0.1:5173/__altair_vega_rendezvous",
+    None if cfg!(debug_assertions) => "ws://127.0.0.1:5173/__altair_vega_rendezvous",
+    None => "wss://tools.elfile4138.moe/altair-vega/__altair_vega_rendezvous",
 };
 const RENDEZVOUS_CLOSE_INVALID_PAYLOAD: u16 = 1003;
 const RENDEZVOUS_CLOSE_MESSAGE_TOO_LARGE: u16 = 1009;
@@ -2093,9 +2094,10 @@ TOPICS
     altair-vega help examples
 
 DEFAULT RENDEZVOUS
-    The default is compiled into the binary. Build with
-    ALTAIR_VEGA_DEFAULT_RENDEZVOUS=<URL> to change it, or pass --room-url at
-    runtime.
+    Debug builds default to the local development rendezvous endpoint. Release
+    builds, including cargo install --git builds, default to the hosted endpoint.
+    Build with ALTAIR_VEGA_DEFAULT_RENDEZVOUS=<URL> to change it, or pass
+    --room-url at runtime.
 
 SHARING
     Commands that print a code or ticket can render a terminal QR code with

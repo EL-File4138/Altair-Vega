@@ -878,6 +878,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn docs_join_applies_remote_recreate_after_delete_without_conflict() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(remote_root.join("recreated.txt"), b"first version\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        let doc = server.open_doc(&export.doc_id).await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let initial_remote =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        client
+            .seed_local_from_manifest(imported.peer.clone(), &local_root, &initial_remote)
+            .await?;
+
+        std::fs::remove_file(remote_root.join("recreated.txt"))?;
+        let after_delete = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, deleted_manifest) = server
+            .publish_manifest(&doc, &remote_root, &export.manifest, &after_delete)
+            .await?;
+        let synced_delete =
+            wait_for_specific_manifest(&client, &imported.doc, &deleted_manifest).await?;
+        client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &initial_remote,
+                &local_root,
+                &synced_delete,
+            )
+            .await?;
+        assert!(!local_root.join("recreated.txt").exists());
+
+        std::fs::write(remote_root.join("recreated.txt"), b"second version\n")?;
+        let after_recreate = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, recreated_manifest) = server
+            .publish_manifest(&doc, &remote_root, &deleted_manifest, &after_recreate)
+            .await?;
+        let synced_recreate =
+            wait_for_specific_manifest(&client, &imported.doc, &recreated_manifest).await?;
+        let plan = client
+            .apply_remote_manifest(
+                imported.peer.clone(),
+                &deleted_manifest,
+                &local_root,
+                &synced_recreate,
+            )
+            .await?;
+
+        assert!(plan.conflicts.is_empty());
+        assert!(plan.actions.iter().any(|action| matches!(
+            action,
+            SyncAction::UpsertFile { path, .. } if path == "recreated.txt"
+        )));
+        assert_eq!(
+            std::fs::read(local_root.join("recreated.txt"))?,
+            b"second version\n"
+        );
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn docs_join_applies_remote_rename_without_refetching_as_add_delete() -> Result<()> {
         let temp = TempDir::new()?;
         let remote_root = temp.path().join("remote");

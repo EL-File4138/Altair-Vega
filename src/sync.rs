@@ -174,6 +174,8 @@ pub fn diff_manifests(previous: &SyncManifest, current: &SyncManifest) -> Vec<Sy
         let after = current.get(&path);
         let kind = match (before, after) {
             (None, Some(after)) if !after.is_tombstone() => Some(SyncChangeKind::Added),
+            (None, Some(after)) if after.is_tombstone() => None,
+            (Some(before), None) if before.is_tombstone() => None,
             (Some(_), None) => Some(SyncChangeKind::Deleted),
             (Some(before), Some(after)) if !entry_state_eq(Some(before), Some(after)) => {
                 Some(if after.is_tombstone() {
@@ -348,12 +350,12 @@ pub fn merge_manifests(
         let local_entry = local.get(&path);
         let remote_entry = remote.get(&path);
 
-        if entry_state_eq(local_entry, remote_entry) {
+        if sync_state_eq(local_entry, remote_entry) {
             continue;
         }
 
-        let local_changed = !entry_state_eq(local_entry, base_entry);
-        let remote_changed = !entry_state_eq(remote_entry, base_entry);
+        let local_changed = !sync_state_eq(local_entry, base_entry);
+        let remote_changed = !sync_state_eq(remote_entry, base_entry);
 
         match (local_changed, remote_changed) {
             (false, false) => {}
@@ -739,6 +741,14 @@ fn entry_state_eq(left: Option<&SyncEntry>, right: Option<&SyncEntry>) -> bool {
     }
 }
 
+fn sync_state_eq(left: Option<&SyncEntry>, right: Option<&SyncEntry>) -> bool {
+    match (left, right) {
+        (None, Some(right)) if right.is_tombstone() => true,
+        (Some(left), None) if left.is_tombstone() => true,
+        _ => entry_state_eq(left, right),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1093,6 +1103,15 @@ mod tests {
     }
 
     #[test]
+    fn diff_treats_tombstones_and_absence_as_unchanged() {
+        let previous = SyncManifest::new([SyncEntry::tombstone("deleted.txt", 1)]);
+        let current = SyncManifest::default();
+
+        assert!(diff_manifests(&previous, &current).is_empty());
+        assert!(diff_manifests(&current, &previous).is_empty());
+    }
+
+    #[test]
     fn scan_ignores_conflict_and_state_paths() {
         let temp = TempDir::new().unwrap();
         let state_dir = temp.path().join(".altair-sync-state");
@@ -1253,6 +1272,25 @@ mod tests {
             action,
             SyncAction::UpsertFile { path, .. } if path == "added-after-delete.txt"
         )));
+        assert!(plan.conflicts.is_empty());
+    }
+
+    #[test]
+    fn remote_recreate_after_tombstone_upserts_without_conflict() {
+        let recreated = file_entry("deleted.txt", 3);
+        let base = SyncManifest::new([SyncEntry::tombstone("deleted.txt", 2)]);
+        let local = SyncManifest::default();
+        let remote = SyncManifest::new([recreated.clone()]);
+
+        let plan = merge_manifests(&base, &local, &remote);
+
+        assert_eq!(
+            plan.actions,
+            vec![SyncAction::UpsertFile {
+                path: "deleted.txt".to_string(),
+                entry: recreated,
+            }]
+        );
         assert!(plan.conflicts.is_empty());
     }
 

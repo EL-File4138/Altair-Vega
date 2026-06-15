@@ -524,8 +524,13 @@ fn collect_entries(
     paths.sort();
 
     for path in paths {
-        let metadata = fs::symlink_metadata(&path)
-            .with_context(|| format!("stat sync path {}", path.display()))?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("stat sync path {}", path.display()));
+            }
+        };
         if metadata.file_type().is_symlink() {
             continue;
         }
@@ -542,7 +547,11 @@ fn collect_entries(
         }
 
         let relative = normalize_relative_path(root, &path)?;
-        let descriptor = build_file_descriptor(&path, &relative, chunk_size_bytes)?;
+        let descriptor = match build_file_descriptor(&path, &relative, chunk_size_bytes) {
+            Ok(descriptor) => descriptor,
+            Err(error) if is_not_found_error(&error) => continue,
+            Err(error) => return Err(error),
+        };
         let modified_unix_ms = metadata
             .modified()
             .ok()
@@ -551,6 +560,13 @@ fn collect_entries(
         entries.push(SyncEntry::file(relative, descriptor, modified_unix_ms));
     }
     Ok(())
+}
+
+fn is_not_found_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|cause| cause.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn build_file_descriptor(

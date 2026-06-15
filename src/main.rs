@@ -3834,7 +3834,7 @@ async fn run_sync_host(
     let previous_manifest = if manifest_state_path.exists() {
         load_manifest_state(&manifest_state_path, "host publish")?
     } else {
-        current_manifest.clone()
+        altair_vega::SyncManifest::default()
     };
     let (doc, result) = export_host_manifest(
         &node,

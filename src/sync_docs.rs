@@ -1,7 +1,7 @@
 use altair_vega::{
-    SyncAction, SyncEntry, SyncEntryState, SyncManifest, SyncMergePlan, join_sync_path,
-    merge_manifests, scan_directory, sync_apply_target_path, sync_temp_path, unix_time_now_ms,
-    validate_sync_manifest, with_tombstones,
+    SyncAction, SyncEntry, SyncEntryState, SyncManifest, SyncMergePlan, diff_manifests,
+    join_sync_path, merge_manifests, scan_directory, sync_apply_target_path, sync_temp_path,
+    unix_time_now_ms, validate_sync_manifest, with_tombstones,
 };
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::StreamExt;
@@ -193,9 +193,10 @@ impl DocsSyncNode {
         current_manifest: &SyncManifest,
     ) -> Result<(usize, SyncManifest)> {
         let manifest = with_tombstones(previous_manifest, current_manifest, unix_time_now_ms());
-        let content_blobs = preload_manifest_blobs(&self.blobs, root, &manifest).await?;
+        let changed_manifest = changed_entries_manifest(previous_manifest, &manifest);
+        let content_blobs = preload_manifest_blobs(&self.blobs, root, &changed_manifest).await?;
         let author = self.docs.author_default().await?;
-        write_manifest(doc, author, &manifest).await?;
+        write_manifest(doc, author, &changed_manifest).await?;
         self.advertise_peer_ticket(doc).await?;
         Ok((content_blobs, manifest))
     }
@@ -512,6 +513,17 @@ pub async fn write_manifest(
     Ok(())
 }
 
+fn changed_entries_manifest(
+    previous_manifest: &SyncManifest,
+    manifest: &SyncManifest,
+) -> SyncManifest {
+    let entries = diff_manifests(previous_manifest, manifest)
+        .into_iter()
+        .filter_map(|change| manifest.get(&change.path).cloned())
+        .collect::<Vec<_>>();
+    SyncManifest::new(entries)
+}
+
 pub async fn read_manifest(blobs: &BlobsStore, doc: &Doc) -> Result<SyncManifest> {
     let query = Query::single_latest_per_key()
         .key_prefix(MANIFEST_PREFIX)
@@ -532,10 +544,7 @@ pub async fn read_manifest(blobs: &BlobsStore, doc: &Doc) -> Result<SyncManifest
         let _path = key
             .strip_prefix(MANIFEST_PREFIX)
             .ok_or_else(|| anyhow::anyhow!("docs entry outside manifest namespace"))?;
-        let bytes = blobs
-            .get_bytes(entry.content_hash())
-            .await
-            .context("load docs metadata blob")?;
+        let bytes = load_manifest_metadata_blob(blobs, entry.content_hash()).await?;
         let sync_entry: SyncEntry =
             serde_json::from_slice(&bytes).context("deserialize docs sync manifest entry")?;
         entries.push(sync_entry);
@@ -543,6 +552,24 @@ pub async fn read_manifest(blobs: &BlobsStore, doc: &Doc) -> Result<SyncManifest
     let manifest = SyncManifest::new(entries);
     validate_sync_manifest(&manifest)?;
     Ok(manifest)
+}
+
+async fn load_manifest_metadata_blob(
+    blobs: &BlobsStore,
+    hash: iroh_blobs::Hash,
+) -> Result<Vec<u8>> {
+    for attempt in 0..5 {
+        match blobs.get_bytes(hash).await {
+            Ok(bytes) => return Ok(bytes.to_vec()),
+            Err(error) if attempt < 4 => {
+                let delay_ms = 100 * (attempt + 1);
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                drop(error);
+            }
+            Err(error) => return Err(error).context("load docs metadata blob"),
+        }
+    }
+    unreachable!("manifest metadata retry loop always returns")
 }
 
 const MANIFEST_PREFIX: &str = "manifest/";
@@ -871,6 +898,63 @@ mod tests {
             std::fs::read(local_root.join("added-after-delete.txt"))?,
             b"new file\n"
         );
+
+        client.shutdown().await?;
+        server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docs_incremental_publish_does_not_rewrite_stale_entries() -> Result<()> {
+        let temp = TempDir::new()?;
+        let remote_root = temp.path().join("remote");
+        let local_root = temp.path().join("local");
+        std::fs::create_dir_all(&remote_root)?;
+        std::fs::create_dir_all(&local_root)?;
+        std::fs::write(remote_root.join("host.txt"), b"host base\n")?;
+        std::fs::write(remote_root.join("join.txt"), b"join base\n")?;
+
+        let server = DocsSyncNode::spawn_persistent(&temp.path().join("server-state")).await?;
+        let export = server
+            .export_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)
+            .await?;
+        let doc = server.open_doc(&export.doc_id).await?;
+
+        let client = DocsSyncNode::spawn_persistent(&temp.path().join("client-state")).await?;
+        let imported = client.import_doc(&export.ticket).await?;
+        let stale_base =
+            wait_for_specific_manifest(&client, &imported.doc, &export.manifest).await?;
+        client
+            .seed_local_from_manifest(imported.peer.clone(), &local_root, &stale_base)
+            .await?;
+
+        std::fs::write(remote_root.join("host.txt"), b"host updated\n")?;
+        let remote_current = scan_directory(&remote_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, remote_published) = server
+            .publish_manifest(&doc, &remote_root, &export.manifest, &remote_current)
+            .await?;
+        wait_for_specific_manifest(&client, &imported.doc, &remote_published).await?;
+
+        std::fs::write(local_root.join("join.txt"), b"join updated\n")?;
+        let local_current = scan_directory(&local_root, DEFAULT_SYNC_CHUNK_SIZE_BYTES)?;
+        let (_, local_published_from_stale_base) = client
+            .publish_manifest(&imported.doc, &local_root, &stale_base, &local_current)
+            .await?;
+        let mut expected = remote_published.clone();
+        expected.insert(
+            local_published_from_stale_base
+                .get("join.txt")
+                .expect("local publish includes changed join file")
+                .clone(),
+        );
+
+        wait_for_specific_manifest(&server, &doc, &expected).await?;
+        let final_manifest = server.read_doc_manifest(&doc).await?;
+        assert_eq!(
+            final_manifest.get("host.txt"),
+            remote_published.get("host.txt")
+        );
+        assert_eq!(final_manifest.get("join.txt"), expected.get("join.txt"));
 
         client.shutdown().await?;
         server.shutdown().await?;

@@ -12,7 +12,7 @@ base64 = "0.22.1"
 blake3 = "1.8.5"
 chacha20poly1305 = "0.10.1"
 clap = { version = "4.6.1", features = ["derive"] }
-iroh-tickets = "=1.0.0-rc.1"
+iroh-tickets = "1.0.0"
 rand = "0.10.1"
 qrcode = "0.14.1"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -25,18 +25,18 @@ tempfile = "3.27.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 futures-util = "0.3.32"
-iroh = { version = "=1.0.0-rc.1", default-features = false, features = ["tls-ring"] }
-iroh-blobs = { version = "0.102.0", default-features = false, features = ["fs-store"] }
-iroh-docs = { version = "0.100.0", default-features = false, features = ["fs-store"] }
-iroh-gossip = "0.100.0"
-iroh-mdns-address-lookup = "0.3.0"
+iroh = { version = "1.0.0", default-features = false, features = ["tls-ring"] }
+iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store"] }
+iroh-docs = { version = "0.101.0", default-features = false, features = ["fs-store"] }
+iroh-gossip = "0.101.0"
+iroh-mdns-address-lookup = "0.4.0"
 notify = "8.2.0"
 tokio = { version = "1.52.1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal"] }
 tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"] }
 url = "2.5.8"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-iroh = { version = "=1.0.0-rc.1", default-features = false, features = ["tls-ring"] }
+iroh = { version = "1.0.0", default-features = false, features = ["tls-ring"] }
 tokio = { version = "1.52.1", features = ["io-util", "macros", "rt", "time"] }
 
 [profile.release]

@@ -15,7 +15,7 @@ anyhow = "1.0.102"
 async-channel = "2.5.0"
 blake3 = "1.8.5"
 hex = "0.4.3"
-iroh = { version = "=1.0.0-rc.1", default-features = false, features = ["tls-ring"] }
+iroh = { version = "1.0.0", default-features = false, features = ["tls-ring"] }
 js-sys = "0.3.97"
 n0-future = "0.3.2"
 serde = { version = "1.0.228", features = ["derive"] }

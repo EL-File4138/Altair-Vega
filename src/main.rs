@@ -1243,7 +1243,10 @@ async fn main() -> Result<()> {
                         tokio::time::interval(std::time::Duration::from_millis(interval_ms));
                     loop {
                         tokio::select! {
-                            _ = tokio::signal::ctrl_c() => break,
+                            result = shutdown_signal() => {
+                                result?;
+                                break;
+                            },
                             maybe_event = event_rx.recv() => {
                                 if let Some(event) = maybe_event {
                                     match event {
@@ -1293,7 +1296,7 @@ async fn main() -> Result<()> {
                         println!("{line}");
                     }
                     println!("press Ctrl+C to stop serving this doc");
-                    tokio::signal::ctrl_c().await?;
+                    shutdown_signal().await?;
                     node.shutdown().await?;
                 }
                 SyncCommand::DocsServe {
@@ -1361,7 +1364,10 @@ async fn main() -> Result<()> {
                         tokio::time::interval(std::time::Duration::from_millis(interval_ms));
                     loop {
                         tokio::select! {
-                            _ = tokio::signal::ctrl_c() => break,
+                            result = shutdown_signal() => {
+                                result?;
+                                break;
+                            },
                             maybe_event = event_rx.recv() => {
                                 if let Some(Ok(event)) = maybe_event
                                     && matches!(event.kind, EventKind::Access(_)) {
@@ -1541,7 +1547,10 @@ async fn main() -> Result<()> {
                     let mut remote_events = Box::pin(imported.doc.subscribe().await?);
                     loop {
                         tokio::select! {
-                            _ = tokio::signal::ctrl_c() => break,
+                            result = shutdown_signal() => {
+                                result?;
+                                break;
+                            },
                             maybe_remote = remote_events.next() => {
                                 if maybe_remote.is_none() {
                                     continue;
@@ -1679,7 +1688,10 @@ async fn main() -> Result<()> {
 
                     loop {
                         tokio::select! {
-                            _ = tokio::signal::ctrl_c() => break,
+                            result = shutdown_signal() => {
+                                result?;
+                                break;
+                            },
                             maybe_remote = remote_events.next() => {
                                 if maybe_remote.is_none() {
                                     println!("remote sync subscription ended; reconnecting");
@@ -1758,6 +1770,25 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn shutdown_signal() -> Result<()> {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .context("install SIGTERM handler")?;
+        tokio::select! {
+            result = ctrl_c => result.context("listen for Ctrl+C")?,
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.context("listen for Ctrl+C")?;
+    }
     Ok(())
 }
 
@@ -2414,7 +2445,7 @@ async fn run_pair_room(
     );
     if matches!(mode, PairMode::Persistent) {
         println!("press Ctrl+C to stop");
-        tokio::signal::ctrl_c().await?;
+        shutdown_signal().await?;
     }
     peer.endpoint.close().await;
     Ok(())
@@ -2564,7 +2595,10 @@ async fn run_naked_pair_host(mode: PairMode, qr: bool) -> Result<()> {
         println!("press Ctrl+C to stop serving this naked endpoint ticket");
         loop {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => break,
+                result = shutdown_signal() => {
+                    result?;
+                    break;
+                },
                 maybe_incoming = endpoint.accept() => {
                     let Some(incoming) = maybe_incoming else {
                         break;
@@ -2594,7 +2628,7 @@ async fn run_naked_pair_join(ticket: &str, mode: PairMode) -> Result<()> {
     println!("paired with: {}", connection.remote_id());
     if matches!(mode, PairMode::Persistent) {
         println!("press Ctrl+C to stop");
-        tokio::signal::ctrl_c().await?;
+        shutdown_signal().await?;
     }
     endpoint.close().await;
     Ok(())
@@ -2852,7 +2886,7 @@ async fn run_naked_send_file(path: PathBuf, state_dir: Option<PathBuf>, qr: bool
     println!("file: {}", path.display());
     println!("bytes: {}", descriptor.size_bytes);
     println!("press Ctrl+C to stop serving this naked ticket");
-    tokio::signal::ctrl_c().await?;
+    shutdown_signal().await?;
     provider.shutdown().await?;
     Ok(())
 }
@@ -3282,7 +3316,8 @@ async fn wait_for_local_control_peer_without_rendezvous(
             unix_secs(now + ttl),
         );
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            result = shutdown_signal() => {
+                result?;
                 bail!("stopped while waiting for local native peer");
             }
             result = wait_for_local_control_peer(
@@ -3877,7 +3912,10 @@ async fn run_sync_host(
 
         loop {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => break,
+                result = shutdown_signal() => {
+                    result?;
+                    break;
+                },
                 maybe_remote = remote_events.next() => {
                     if maybe_remote.is_none() {
                         println!("remote sync subscription ended; reconnecting");
@@ -4000,7 +4038,10 @@ async fn run_sync_host(
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
+            result = shutdown_signal() => {
+                result?;
+                break;
+            },
             maybe_remote = remote_events.next() => {
                 if maybe_remote.is_none() {
                     println!("remote sync subscription ended; reconnecting");

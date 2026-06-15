@@ -97,7 +97,9 @@ pub async fn run_browser_peer(code: String, room_url: String, output_dir: PathBu
     let (_write, mut read) = ws.split();
 
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
+        result = shutdown_signal() => {
+            result?;
+        }
         result = async {
             while let Some(message) = read.next().await {
                 if let Message::Close(frame) = message? {
@@ -114,6 +116,25 @@ pub async fn run_browser_peer(code: String, room_url: String, output_dir: PathBu
         .shutdown()
         .await
         .context("shutdown browser peer router")?;
+    Ok(())
+}
+
+async fn shutdown_signal() -> Result<()> {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .context("install SIGTERM handler")?;
+        tokio::select! {
+            result = ctrl_c => result.context("listen for Ctrl+C")?,
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.context("listen for Ctrl+C")?;
+    }
     Ok(())
 }
 

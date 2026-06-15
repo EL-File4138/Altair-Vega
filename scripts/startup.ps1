@@ -11,11 +11,13 @@ $ErrorActionPreference = 'Stop'
 
 function Show-Usage {
     @"
-Usage: scripts/startup.ps1 [-Url <binary-url>] [-RuntimeParent <dir>] [-KeepRuntime] [-Help] [-- <args...>]
+Usage: . scripts/startup.ps1 [-Url <binary-url>] [-RuntimeParent <dir>] [-KeepRuntime]
+       scripts/startup.ps1 [-Url <binary-url>] [-RuntimeParent <dir>] [-KeepRuntime] [-Help] [-- <args...>]
 
-Downloads a native Altair Vega executable into a disposable runtime workspace,
-runs it with any remaining arguments, and removes the downloaded executable and
-runtime state on exit unless -KeepRuntime is set.
+Downloads a native Altair Vega executable into a temporary session workspace.
+When dot-sourced, the launcher prepends the downloaded binary to PATH and cleans
+the workspace when the shell exits unless -KeepRuntime is set. When executed, it
+runs the binary once with any remaining arguments and cleans up on exit.
 
 Environment:
   ALTAIR_VEGA_BIN_URL       Explicit binary URL when -Url is omitted.
@@ -66,14 +68,16 @@ if (-not $RuntimeParent) {
     $RuntimeParent = [System.IO.Path]::GetTempPath()
 }
 
-$workspace = Join-Path $RuntimeParent ("altair-vega." + [Guid]::NewGuid().ToString('N'))
+$workspace = Join-Path $RuntimeParent ("altair-vega-session-" + [Guid]::NewGuid().ToString('N'))
 $runtimeRoot = Join-Path $workspace 'runtime'
 $tmpRoot = Join-Path $runtimeRoot 'tmp'
-$binaryPath = Join-Path $workspace 'altair-vega.exe'
+$binRoot = Join-Path $workspace 'bin'
+$binaryPath = Join-Path $binRoot 'altair-vega.exe'
 
 New-Item -ItemType Directory -Path $workspace -Force | Out-Null
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $binRoot -Force | Out-Null
 
 $previousEnv = @{
     ALTAIR_VEGA_RUNTIME_ROOT = $env:ALTAIR_VEGA_RUNTIME_ROOT
@@ -81,6 +85,19 @@ $previousEnv = @{
     TMPDIR = $env:TMPDIR
     TMP = $env:TMP
     TEMP = $env:TEMP
+    PATH = $env:PATH
+}
+
+$invocationLine = [string]$MyInvocation.Line
+$dotSourced = $MyInvocation.InvocationName -eq '.' -or $invocationLine.TrimStart().StartsWith('. ')
+
+function Remove-AltairVegaSessionWorkspace {
+    if ($KeepRuntime) {
+        Write-Host "keeping Altair Vega runtime at $workspace"
+    }
+    else {
+        Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 try {
@@ -91,6 +108,19 @@ try {
     $env:TMPDIR = $tmpRoot
     $env:TMP = $tmpRoot
     $env:TEMP = $tmpRoot
+    $env:PATH = $binRoot + [System.IO.Path]::PathSeparator + $env:PATH
+
+    if ($dotSourced) {
+        Register-EngineEvent -SourceIdentifier PowerShell.Exiting -MessageData @{ Workspace = $workspace; KeepRuntime = $KeepRuntime.IsPresent } -Action {
+            $workspace = $event.MessageData.Workspace
+            if (-not $event.MessageData.KeepRuntime) {
+                Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        } | Out-Null
+        Write-Host 'Altair Vega is available as altair-vega for this shell session.'
+        Write-Host "runtime workspace: $workspace"
+        return
+    }
 
     if ($CommandArgs.Count -gt 0 -and $CommandArgs[0] -eq '--') {
         if ($CommandArgs.Count -gt 1) {
@@ -104,20 +134,17 @@ try {
     $exitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
 }
 finally {
-    foreach ($entry in $previousEnv.GetEnumerator()) {
-        if ($null -eq $entry.Value) {
-            Remove-Item -Path ("Env:" + $entry.Key) -ErrorAction SilentlyContinue
+    if (-not $dotSourced) {
+        foreach ($entry in $previousEnv.GetEnumerator()) {
+            if ($null -eq $entry.Value) {
+                Remove-Item -Path ("Env:" + $entry.Key) -ErrorAction SilentlyContinue
+            }
+            else {
+                Set-Item -Path ("Env:" + $entry.Key) -Value $entry.Value
+            }
         }
-        else {
-            Set-Item -Path ("Env:" + $entry.Key) -Value $entry.Value
-        }
-    }
 
-    if ($KeepRuntime) {
-        Write-Host "keeping Altair Vega runtime at $workspace"
-    }
-    else {
-        Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-AltairVegaSessionWorkspace
     }
 }
 

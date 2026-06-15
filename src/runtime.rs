@@ -66,7 +66,12 @@ pub fn runtime_root_from_env() -> Option<PathBuf> {
 }
 
 pub fn resolve_runtime_state_dir(cli_value: Option<PathBuf>, default_name: &str) -> PathBuf {
-    resolve_runtime_state_dir_with_root(cli_value, runtime_root_from_env().as_deref(), default_name)
+    resolve_runtime_state_dir_with_root(
+        cli_value,
+        runtime_root_from_env().as_deref(),
+        preferred_runtime_parent(),
+        default_name,
+    )
 }
 
 pub fn preferred_runtime_parent() -> PathBuf {
@@ -82,17 +87,27 @@ pub fn preferred_runtime_parent() -> PathBuf {
 fn resolve_runtime_state_dir_with_root(
     cli_value: Option<PathBuf>,
     runtime_root: Option<&Path>,
+    fallback_parent: PathBuf,
     default_name: &str,
 ) -> PathBuf {
     if let Some(path) = cli_value {
         return path;
     }
 
+    let default_name = visible_runtime_name(default_name);
+
     if let Some(root) = runtime_root {
-        return root.join(default_name);
+        return root.join(&default_name);
     }
 
-    PathBuf::from(default_name)
+    fallback_parent.join("altair-vega").join(default_name)
+}
+
+fn visible_runtime_name(default_name: &str) -> String {
+    default_name
+        .trim_start_matches('.')
+        .trim_start_matches(std::path::MAIN_SEPARATOR)
+        .to_owned()
 }
 
 fn preferred_runtime_parent_from(
@@ -129,6 +144,7 @@ mod tests {
         let resolved = resolve_runtime_state_dir_with_root(
             Some(explicit.clone()),
             Some(Path::new("/runtime-root")),
+            PathBuf::from("/fallback-root"),
             ".altair-sync-docs",
         );
         assert_eq!(resolved, explicit);
@@ -139,18 +155,29 @@ mod tests {
         let resolved = resolve_runtime_state_dir_with_root(
             None,
             Some(Path::new("/runtime-root")),
+            PathBuf::from("/fallback-root"),
             ".altair-sync-docs",
         );
         assert_eq!(
             resolved,
-            Path::new("/runtime-root").join(".altair-sync-docs")
+            Path::new("/runtime-root").join("altair-sync-docs")
         );
     }
 
     #[test]
-    fn resolve_runtime_state_dir_falls_back_to_local_default() {
-        let resolved = resolve_runtime_state_dir_with_root(None, None, ".altair-sync-docs");
-        assert_eq!(resolved, PathBuf::from(".altair-sync-docs"));
+    fn resolve_runtime_state_dir_falls_back_to_temp_visible_default() {
+        let resolved = resolve_runtime_state_dir_with_root(
+            None,
+            None,
+            PathBuf::from("/fallback-root"),
+            ".altair-sync-docs",
+        );
+        assert_eq!(
+            resolved,
+            Path::new("/fallback-root")
+                .join("altair-vega")
+                .join("altair-sync-docs")
+        );
     }
 
     #[test]
@@ -212,10 +239,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn launcher_script_runs_downloaded_binary_and_cleans_workspace() {
-        if !command_exists("curl") && !command_exists("wget") {
-            return;
-        }
-
         let temp = TempDir::new().unwrap();
         let probe_dir = temp.path().join("probe");
         fs::create_dir_all(&probe_dir).unwrap();
@@ -261,6 +284,55 @@ mod tests {
         assert!(!runtime_root.exists(), "runtime workspace was not removed");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn launcher_script_can_be_sourced_for_session_path() {
+        let temp = TempDir::new().unwrap();
+        let probe_dir = temp.path().join("probe");
+        fs::create_dir_all(&probe_dir).unwrap();
+
+        let stub = temp.path().join("stub.sh");
+        fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\nset -eu\nout_dir=\"$1\"\nprintf '%s\\n' \"$0\" > \"$out_dir/exe-path.txt\"\nprintf '%s\\n' \"${{{}:-}}\" > \"$out_dir/runtime-root.txt\"\n",
+                super::RUNTIME_ROOT_ENV,
+            ),
+        )
+        .unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&stub).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&stub, permissions).unwrap();
+
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/startup.sh");
+        let file_url = format!("file://{}", stub.display());
+        let command = format!(
+            ". '{}' --url '{}' --runtime-parent '{}'; altair-vega '{}'",
+            script.display(),
+            file_url,
+            temp.path().display(),
+            probe_dir.display()
+        );
+        let status = Command::new("sh").arg("-c").arg(command).status().unwrap();
+
+        assert!(status.success(), "sourced launcher exited unsuccessfully");
+
+        let exe_path = fs::read_to_string(probe_dir.join("exe-path.txt")).unwrap();
+        let exe_path = PathBuf::from(exe_path.trim());
+        let runtime_root = fs::read_to_string(probe_dir.join("runtime-root.txt")).unwrap();
+        let runtime_root = PathBuf::from(runtime_root.trim());
+
+        assert_eq!(exe_path.file_name().unwrap(), "altair-vega");
+        assert_eq!(exe_path.parent().unwrap().file_name().unwrap(), "bin");
+        assert!(!exe_path.exists(), "session executable was not removed");
+        assert!(
+            !runtime_root.exists(),
+            "session runtime root was not removed"
+        );
+    }
+
     #[test]
     fn powershell_launcher_declares_runtime_contract() {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/startup.ps1");
@@ -269,6 +341,8 @@ mod tests {
         assert!(contents.contains(super::KEEP_RUNTIME_ENV));
         assert!(contents.contains("Remove-Item"));
         assert!(contents.contains("Invoke-WebRequest"));
+        assert!(contents.contains("Register-EngineEvent"));
+        assert!(contents.contains("altair-vega-session-"));
     }
 
     #[test]
@@ -290,15 +364,6 @@ mod tests {
             "powershell syntax/help check failed for {}",
             script.display()
         );
-    }
-
-    #[cfg(unix)]
-    fn command_exists(name: &str) -> bool {
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!("command -v {name} >/dev/null 2>&1"))
-            .status()
-            .is_ok_and(|status| status.success())
     }
 
     fn pwsh_available() -> bool {

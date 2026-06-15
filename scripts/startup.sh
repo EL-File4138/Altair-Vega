@@ -3,11 +3,13 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: scripts/startup.sh [--url <binary-url>] [--runtime-parent <dir>] [--keep-runtime] [--] [args...]
+Usage: . scripts/startup.sh [--url <binary-url>] [--runtime-parent <dir>] [--keep-runtime]
+       scripts/startup.sh [--url <binary-url>] [--runtime-parent <dir>] [--keep-runtime] [--] [args...]
 
-Downloads a native Altair Vega executable into a disposable runtime workspace,
-runs it with any remaining arguments, and removes the downloaded executable and
-runtime state on exit unless --keep-runtime is set.
+Downloads a native Altair Vega executable into a temporary session workspace.
+When sourced, the launcher prepends the downloaded binary to PATH and cleans the
+workspace when the shell exits unless --keep-runtime is set. When executed, it
+runs the binary once with any remaining arguments and cleans up on exit.
 
 Environment:
   ALTAIR_VEGA_BIN_URL       Explicit binary URL when --url is omitted.
@@ -48,6 +50,12 @@ default_binary_url() {
 download_to() {
   url=$1
   target=$2
+  case "$url" in
+    file://*)
+      cp "${url#file://}" "$target"
+      return
+      ;;
+  esac
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$url" -o "$target"
     return
@@ -63,6 +71,11 @@ download_to() {
 binary_url=${ALTAIR_VEGA_BIN_URL:-}
 runtime_parent=
 keep_runtime=0
+sourced=0
+
+if (return 0 2>/dev/null); then
+  sourced=1
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -107,11 +120,12 @@ else
 fi
 
 umask 077
-workspace=$(mktemp -d "${base_dir%/}/altair-vega.XXXXXX")
+workspace=$(mktemp -d "${base_dir%/}/altair-vega-session-XXXXXX")
 runtime_root="$workspace/runtime"
 tmp_root="$runtime_root/tmp"
-binary_path="$workspace/altair-vega"
-mkdir -p "$runtime_root" "$tmp_root"
+bin_root="$workspace/bin"
+binary_path="$bin_root/altair-vega"
+mkdir -p "$runtime_root" "$tmp_root" "$bin_root"
 
 cleanup() {
   status=$?
@@ -124,14 +138,39 @@ cleanup() {
   exit "$status"
 }
 
-trap cleanup EXIT HUP INT TERM
+cleanup_sourced_runtime() {
+  trap - EXIT HUP INT TERM
+  if [ "$keep_runtime" -eq 1 ]; then
+    printf 'keeping Altair Vega runtime at %s\n' "$workspace" >&2
+  else
+    rm -rf "$workspace"
+  fi
+}
+
+if [ "$sourced" -eq 0 ]; then
+  trap cleanup EXIT HUP INT TERM
+fi
 
 download_to "$binary_url" "$binary_path"
 chmod 700 "$binary_path"
+
+if [ "$sourced" -eq 1 ]; then
+  export ALTAIR_VEGA_RUNTIME_ROOT="$runtime_root"
+  export ALTAIR_VEGA_KEEP_RUNTIME="$keep_runtime"
+  export TMPDIR="$tmp_root"
+  export TMP="$tmp_root"
+  export TEMP="$tmp_root"
+  export PATH="$bin_root:$PATH"
+  trap cleanup_sourced_runtime EXIT
+  printf 'Altair Vega is available as altair-vega for this shell session.\n' >&2
+  printf 'runtime workspace: %s\n' "$workspace" >&2
+  return 0
+fi
 
 ALTAIR_VEGA_RUNTIME_ROOT="$runtime_root" \
 ALTAIR_VEGA_KEEP_RUNTIME="$keep_runtime" \
 TMPDIR="$tmp_root" \
 TMP="$tmp_root" \
 TEMP="$tmp_root" \
+PATH="$bin_root:$PATH" \
 "$binary_path" "$@"

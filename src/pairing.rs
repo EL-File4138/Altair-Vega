@@ -138,12 +138,13 @@ impl EstablishedPairing {
         let plaintext = serde_json::to_vec(bundle)?;
         let aad = self.code.normalized();
         let cipher = self.intro_cipher();
-        let mut nonce = [0u8; 24];
-        rand::fill(&mut nonce);
+        let mut nonce_bytes = [0u8; 24];
+        rand::fill(&mut nonce_bytes);
+        let nonce = XNonce::try_from(nonce_bytes.as_slice()).expect("fixed nonce has valid length");
 
         let ciphertext = cipher
             .encrypt(
-                XNonce::from_slice(&nonce),
+                &nonce,
                 Payload {
                     msg: &plaintext,
                     aad: aad.as_bytes(),
@@ -151,7 +152,10 @@ impl EstablishedPairing {
             )
             .map_err(|_| PairingError::Encrypt)?;
 
-        Ok(PairingIntroEnvelope { nonce, ciphertext })
+        Ok(PairingIntroEnvelope {
+            nonce: nonce_bytes,
+            ciphertext,
+        })
     }
 
     pub fn open_bootstrap(
@@ -159,10 +163,12 @@ impl EstablishedPairing {
         envelope: &PairingIntroEnvelope,
     ) -> Result<IrohBootstrapBundle, PairingError> {
         let aad = self.code.normalized();
+        let nonce =
+            XNonce::try_from(envelope.nonce.as_slice()).expect("fixed nonce has valid length");
         let plaintext = self
             .intro_cipher()
             .decrypt(
-                XNonce::from_slice(&envelope.nonce),
+                &nonce,
                 Payload {
                     msg: &envelope.ciphertext,
                     aad: aad.as_bytes(),

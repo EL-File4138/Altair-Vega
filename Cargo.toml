@@ -7,37 +7,37 @@ repository = "https://github.com/EL-File4138/Altair-Vega"
 description = "Peer-to-peer transfer for messages, files, and two-peer folder sync."
 
 [dependencies]
-anyhow = "1.0.102"
-base64 = "0.22.1"
-blake3 = "1.8.5"
-chacha20poly1305 = "0.10.1"
-clap = { version = "4.6.1", features = ["derive"] }
+anyhow = "1.0.104"
+base64 = "0.23.1"
+blake3 = "1.8.7"
+chacha20poly1305 = "0.11.0"
+clap = { version = "4.6.6", features = ["derive"] }
 iroh-tickets = "1.0.0"
-rand = "0.10.1"
+rand = "0.10.2"
 qrcode = "0.14.1"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 spake2 = { version = "0.4.0", features = ["getrandom"] }
-thiserror = "2.0.18"
+thiserror = "2.0.20"
 
 [dev-dependencies]
 tempfile = "3.27.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-futures-util = "0.3.32"
-iroh = { version = "1.0.0", default-features = false, features = ["tls-ring"] }
+futures-util = "0.3.34"
+iroh = { version = "1.1.0", default-features = false, features = ["tls-ring"] }
 iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store"] }
 iroh-docs = { version = "0.101.0", default-features = false, features = ["fs-store"] }
 iroh-gossip = "0.101.0"
-iroh-mdns-address-lookup = "0.4.0"
+iroh-mdns-address-lookup = "0.5.0"
 notify = "8.2.0"
-tokio = { version = "1.52.1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal"] }
-tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"] }
+tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 url = "2.5.8"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-iroh = { version = "1.0.0", default-features = false, features = ["tls-ring"] }
-tokio = { version = "1.52.1", features = ["io-util", "macros", "rt", "time"] }
+iroh = { version = "1.1.0", default-features = false, features = ["tls-ring"] }
+tokio = { version = "1.53.1", features = ["io-util", "macros", "rt", "time"] }
 
 [profile.release]
 opt-level = "z"

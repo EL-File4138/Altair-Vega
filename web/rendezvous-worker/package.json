@@ -16,8 +16,8 @@
     "deploy:dry-run": "wrangler deploy --dry-run"
   },
   "devDependencies": {
-    "typescript": "^6.0.3",
-    "wrangler": "^4.87.0"
+    "typescript": "^7.0.2",
+    "wrangler": "^4.129.0"
   },
   "overrides": {
     "esbuild": "0.28.1",

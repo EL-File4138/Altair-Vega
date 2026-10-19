@@ -15,16 +15,16 @@ anyhow = "1.0.104"
 async-channel = "2.5.0"
 blake3 = "1.8.7"
 hex = "0.4.3"
-iroh = { version = "1.1.0", default-features = false, features = ["tls-ring"] }
-js-sys = "0.3.105"
+iroh = { version = "1.3.0", default-features = false, features = ["tls-ring"] }
+js-sys = "0.3.106"
 n0-future = "0.3.2"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 serde-wasm-bindgen = "0.6.5"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt"] }
 tracing-subscriber-wasm = "0.1.0"
-wasm-bindgen = "0.2.128"
-wasm-bindgen-futures = "0.4.78"
-wasm-streams = "0.5.0"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+wasm-streams = "0.7.0"
 console_error_panic_hook = "0.1.7"

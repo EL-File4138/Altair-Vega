@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "altair-vega"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "altair-vega-browser"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "altair-vega",
  "anyhow",

@@ -17,10 +17,10 @@
   },
   "devDependencies": {
     "typescript": "^7.0.2",
-    "wrangler": "^4.151.2"
+    "wrangler": "^4.168.0"
   },
   "overrides": {
-    "esbuild": "0.28.1",
-    "ws": "8.21.0"
+    "esbuild": "0.28.2",
+    "ws": "8.23.0"
   }
 }

@@ -20,17 +20,17 @@
   },
   "dependencies": {
     "altair-vega-browser": "file:./pkg",
-    "dompurify": "^3.4.17",
-    "lucide-solid": "^1.59.0",
-    "marked": "^18.1.1",
+    "dompurify": "^3.5.0",
+    "lucide-solid": "^1.80.0",
+    "marked": "^18.3.0",
     "qrcode-generator": "^2.0.4",
-    "solid-js": "^1.9.17"
+    "solid-js": "^1.9.20"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
-    "vite": "^8.3.4",
-    "vite-plugin-solid": "^2.11.14",
+    "vite": "^8.3.8",
+    "vite-plugin-solid": "^2.11.17",
     "vite-plugin-wasm": "^3.6.0",
-    "ws": "^8.22.0"
+    "ws": "^8.23.0"
   }
 }

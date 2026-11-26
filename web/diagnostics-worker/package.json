@@ -1,0 +1,16 @@
+{
+  "name": "altair-vega-diagnostics-worker",
+  "version": "0.9.3",
+  "private": true,
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "scripts": {
+    "types": "wrangler types --strict-vars=false",
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts test/*.test.mjs",
+    "dev": "wrangler dev",
+    "deploy:dry-run": "wrangler deploy --dry-run"
+  },
+  "devDependencies": { "esbuild": "0.28.2", "miniflare": "5.20261123.1-beta", "typescript": "^7.0.2", "wrangler": "^4.168.0" },
+  "overrides": { "esbuild": "0.28.2", "ws": "8.23.0" }
+}

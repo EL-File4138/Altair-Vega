@@ -1,6 +1,7 @@
 pub mod bootstrap;
 pub mod code;
 pub mod control;
+pub mod diagnostics;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod files;
 #[cfg(not(target_arch = "wasm32"))]
@@ -13,6 +14,8 @@ pub mod rendezvous;
 pub mod runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sync;
+#[cfg(all(feature = "telemetry", not(target_arch = "wasm32")))]
+pub mod telemetry;
 
 pub use bootstrap::{CURRENT_PROTOCOL_VERSION, IrohBootstrapBundle, PeerCapabilities};
 pub use code::{ShortCode, ShortCodeError};

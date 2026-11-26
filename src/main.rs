@@ -29,14 +29,40 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Error as WebSocketError, Message, protocol::CloseFrame},
-};
+use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message, protocol::CloseFrame};
 use url::Url;
 
 mod browser_peer;
 mod sync_docs;
+
+async fn connect_async(
+    url: &str,
+) -> std::result::Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    WebSocketError,
+> {
+    #[cfg(feature = "telemetry")]
+    altair_vega::telemetry::record(altair_vega::diagnostics::Event::new(
+        altair_vega::diagnostics::Stage::Rendezvous,
+        altair_vega::diagnostics::Outcome::Start,
+    ));
+    let result = tokio_tungstenite::connect_async(url).await;
+    #[cfg(feature = "telemetry")]
+    altair_vega::telemetry::record(altair_vega::diagnostics::Event::new(
+        altair_vega::diagnostics::Stage::Rendezvous,
+        if result.is_ok() {
+            altair_vega::diagnostics::Outcome::Ok
+        } else {
+            altair_vega::diagnostics::Outcome::Failed
+        },
+    ));
+    result
+}
 
 const DEFAULT_RENDEZVOUS_URL: &str = match option_env!("ALTAIR_VEGA_DEFAULT_RENDEZVOUS") {
     Some(value) => value,
@@ -55,6 +81,18 @@ const RENDEZVOUS_CLOSE_ROOM_EXPIRED: u16 = 4000;
 )]
 #[command(disable_help_subcommand = true)]
 struct Cli {
+    #[arg(
+        long,
+        global = true,
+        help = "Disable connectivity diagnostics in telemetry-enabled builds"
+    )]
+    no_telemetry: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Export sanitized diagnostics to a new JSON file (telemetry-enabled builds)"
+    )]
+    diagnostics_output: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -779,6 +817,13 @@ impl From<PeerKindArg> for MessagingPeerKind {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let result = run_cli().await;
+    #[cfg(feature = "telemetry")]
+    altair_vega::telemetry::finish(result.as_ref().err()).await;
+    result
+}
+
+async fn run_cli() -> Result<()> {
     let args = std::env::args_os().collect::<Vec<_>>();
     if args.len() == 1 {
         Cli::command().print_help()?;
@@ -795,6 +840,12 @@ async fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
+    #[cfg(feature = "telemetry")]
+    altair_vega::telemetry::init(cli.no_telemetry, cli.diagnostics_output.clone());
+    #[cfg(not(feature = "telemetry"))]
+    if cli.diagnostics_output.is_some() {
+        bail!("diagnostics were excluded from this build; rebuild with --features telemetry");
+    }
 
     match cli.command {
         Command::Send { command } => match command {
@@ -2571,7 +2622,7 @@ async fn run_pair_command(args: PairArgs) -> Result<()> {
 }
 
 async fn run_naked_pair_host(mode: PairMode, qr: bool) -> Result<()> {
-    let endpoint = Endpoint::builder(presets::N0)
+    let endpoint = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
         .alpns(vec![CONTROL_ALPN.to_vec()])
         .bind()
         .await
@@ -2618,7 +2669,8 @@ async fn run_naked_pair_host(mode: PairMode, qr: bool) -> Result<()> {
 async fn run_naked_pair_join(ticket: &str, mode: PairMode) -> Result<()> {
     let ticket = EndpointTicket::from_str(ticket).context("parse naked endpoint ticket")?;
     save_endpoint_pair_state(&ticket.to_string(), mode)?;
-    let endpoint = Endpoint::bind(presets::N0)
+    let endpoint = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
+        .bind()
         .await
         .context("bind naked pair join endpoint")?;
     let connection = endpoint
@@ -2636,7 +2688,8 @@ async fn run_naked_pair_join(ticket: &str, mode: PairMode) -> Result<()> {
 
 async fn run_naked_send_text(ticket: &str, message: String) -> Result<()> {
     let ticket = EndpointTicket::from_str(ticket).context("parse naked endpoint ticket")?;
-    let endpoint = Endpoint::bind(presets::N0)
+    let endpoint = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
+        .bind()
         .await
         .context("bind naked text sender endpoint")?;
     let connection = endpoint
@@ -2662,7 +2715,7 @@ async fn run_naked_send_text(ticket: &str, message: String) -> Result<()> {
 }
 
 async fn run_naked_receive_text(qr: bool) -> Result<()> {
-    let endpoint = Endpoint::builder(presets::N0)
+    let endpoint = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
         .alpns(vec![CONTROL_ALPN.to_vec()])
         .bind()
         .await
@@ -3023,7 +3076,8 @@ async fn establish_native_control_peer(
     label: &str,
 ) -> Result<NativeControlPeer> {
     let local_role = local_control_role(peer_type);
-    let mut endpoint_builder = Endpoint::builder(presets::N0).alpns(vec![CONTROL_ALPN.to_vec()]);
+    let mut endpoint_builder = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
+        .alpns(vec![CONTROL_ALPN.to_vec()]);
     if let Some(role) = local_role {
         endpoint_builder = endpoint_builder
             .address_lookup(MdnsAddressLookup::builder())
@@ -3572,7 +3626,8 @@ async fn spawn_native_blob_provider(
     let store = FsStore::load(provider_dir)
         .await
         .with_context(|| format!("load native provider store {}", provider_dir.display()))?;
-    let endpoint = Endpoint::bind(presets::N0)
+    let endpoint = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
+        .bind()
         .await
         .context("bind native blob provider endpoint")?;
     let blobs = BlobsProtocol::new(&store, None);
@@ -3632,7 +3687,8 @@ async fn fetch_native_blob(store_dir: &Path, ticket: &BlobTicket) -> Result<u64>
         .await
         .context("inspect native store before fetch")?;
     if !local.is_complete() {
-        let endpoint = Endpoint::bind(presets::N0)
+        let endpoint = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
+            .bind()
             .await
             .context("bind native blob fetch endpoint")?;
         let connection = endpoint
@@ -4220,7 +4276,8 @@ async fn wait_for_local_sync_ticket(
     code: &ShortCode,
     timeout: std::time::Duration,
 ) -> Result<Option<String>> {
-    let endpoint = Endpoint::bind(presets::N0)
+    let endpoint = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
+        .bind()
         .await
         .context("bind local sync discovery endpoint")?;
     let mdns = MdnsAddressLookup::builder()

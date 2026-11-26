@@ -1,3 +1,4 @@
+use altair_vega::diagnostics::{Event as DiagnosticEvent, Outcome, Stage};
 use altair_vega::{FileChunkRange, FileDescriptor, ShortCode};
 use anyhow::{Context, Result};
 use async_channel::Sender;
@@ -34,9 +35,20 @@ pub struct BrowserNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum BrowserEvent {
-    Ready { endpoint_id: String },
-    ReceivedMessage { endpoint_id: String, body: String },
-    SentMessage { endpoint_id: String, body: String },
+    Diagnostic {
+        event: DiagnosticEvent,
+    },
+    Ready {
+        endpoint_id: String,
+    },
+    ReceivedMessage {
+        endpoint_id: String,
+        body: String,
+    },
+    SentMessage {
+        endpoint_id: String,
+        body: String,
+    },
     ReceivedFileCompleted {
         endpoint_id: String,
         transfer_id: u64,
@@ -75,7 +87,9 @@ pub enum BrowserEvent {
         hash_hex: String,
         mime_type: String,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,14 +127,64 @@ struct BrowserFileProtocol {
     shared: Arc<BrowserSharedState>,
 }
 
+#[derive(Debug)]
+struct DiagnosticHooks(Sender<BrowserEvent>);
+
+impl iroh::endpoint::EndpointHooks for DiagnosticHooks {
+    async fn before_connect<'a>(
+        &'a self,
+        _: &'a iroh::EndpointAddr,
+        _: &'a [u8],
+    ) -> iroh::endpoint::BeforeConnectOutcome {
+        let _ = self.0.try_send(BrowserEvent::Diagnostic {
+            event: DiagnosticEvent::new(Stage::Dial, Outcome::Start),
+        });
+        iroh::endpoint::BeforeConnectOutcome::Accept
+    }
+    async fn after_handshake<'a>(
+        &'a self,
+        connection: &'a Connection,
+    ) -> iroh::endpoint::AfterHandshakeOutcome {
+        let _ = self.0.try_send(BrowserEvent::Diagnostic {
+            event: DiagnosticEvent::new(Stage::Handshake, Outcome::Ok),
+        });
+        let mut changes = connection.path_events();
+        let _ = self.0.try_send(BrowserEvent::Diagnostic {
+            event: DiagnosticEvent::connection(connection),
+        });
+        let weak = connection.weak_handle();
+        let closed = weak.closed();
+        let close_sender = self.0.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(closed) = closed.await {
+                let _ = close_sender.try_send(BrowserEvent::Diagnostic {
+                    event: DiagnosticEvent::closed(&closed.reason),
+                });
+            }
+        });
+        let sender = self.0.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            use n0_future::StreamExt;
+
+            while let Some(change) = changes.next().await {
+                if let Some(event) = DiagnosticEvent::path_change(change, &weak) {
+                    let _ = sender.try_send(BrowserEvent::Diagnostic { event });
+                }
+            }
+        });
+        iroh::endpoint::AfterHandshakeOutcome::accept()
+    }
+}
+
 impl BrowserNode {
     async fn spawn_inner() -> Result<(Self, async_channel::Receiver<BrowserEvent>)> {
+        let (event_sender, event_receiver) = async_channel::unbounded();
         let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+            .hooks(DiagnosticHooks(event_sender.clone()))
             .alpns(vec![WEB_MESSAGE_ALPN.to_vec(), WEB_FILE_ALPN.to_vec()])
             .bind()
             .await
             .context("bind browser endpoint")?;
-        let (event_sender, event_receiver) = async_channel::unbounded();
         let shared = Arc::new(BrowserSharedState {
             event_sender: event_sender.clone(),
             next_transfer_id: AtomicU64::new(1),
@@ -198,7 +262,8 @@ impl BrowserNode {
             mime_type,
         };
         let header_bytes = serde_json::to_vec(&header).context("serialize browser file header")?;
-        let header_len = u32::try_from(header_bytes.len()).context("browser file header too large")?;
+        let header_len =
+            u32::try_from(header_bytes.len()).context("browser file header too large")?;
         let connection = self
             .router
             .endpoint()
@@ -213,10 +278,12 @@ impl BrowserNode {
             .await
             .context("write file header")?;
 
-        let ranges = missing_ranges.unwrap_or_else(|| vec![FileChunkRange {
-            start: 0,
-            end: chunk_count(&descriptor),
-        }]);
+        let ranges = missing_ranges.unwrap_or_else(|| {
+            vec![FileChunkRange {
+                start: 0,
+                end: chunk_count(&descriptor),
+            }]
+        });
 
         let mut bytes_complete = 0u64;
         for range in ranges {
@@ -289,7 +356,10 @@ impl BrowserNode {
 }
 
 impl BrowserMessageProtocol {
-    async fn handle_connection(self, connection: Connection) -> std::result::Result<(), AcceptError> {
+    async fn handle_connection(
+        self,
+        connection: Connection,
+    ) -> std::result::Result<(), AcceptError> {
         let endpoint_id = connection.remote_id().to_string();
         let res = self.handle_connection_0(&connection).await;
         if let Err(error) = &res {
@@ -304,7 +374,10 @@ impl BrowserMessageProtocol {
         res
     }
 
-    async fn handle_connection_0(&self, connection: &Connection) -> std::result::Result<(), AcceptError> {
+    async fn handle_connection_0(
+        &self,
+        connection: &Connection,
+    ) -> std::result::Result<(), AcceptError> {
         let endpoint_id = connection.remote_id().to_string();
         let (mut send, mut recv) = connection.accept_bi().await?;
         let bytes = recv
@@ -334,7 +407,10 @@ impl ProtocolHandler for BrowserMessageProtocol {
 }
 
 impl BrowserFileProtocol {
-    async fn handle_connection(self, connection: Connection) -> std::result::Result<(), AcceptError> {
+    async fn handle_connection(
+        self,
+        connection: Connection,
+    ) -> std::result::Result<(), AcceptError> {
         let endpoint_id = connection.remote_id().to_string();
         let res = self.handle_connection_0(&connection).await;
         if let Err(error) = &res {
@@ -509,8 +585,14 @@ impl WasmBrowserNode {
         mime_type: String,
         bytes: js_sys::Uint8Array,
     ) -> Result<(), JsError> {
-        self.send_file_with_ranges(endpoint_id, name, mime_type, bytes, wasm_bindgen::JsValue::NULL)
-            .await
+        self.send_file_with_ranges(
+            endpoint_id,
+            name,
+            mime_type,
+            bytes,
+            wasm_bindgen::JsValue::NULL,
+        )
+        .await
     }
 
     pub async fn send_file_with_ranges(
@@ -603,13 +685,14 @@ where
     ReadableStream::from_stream(stream).into_raw()
 }
 
-async fn read_exact_or_eof(
-    recv: &mut iroh::endpoint::RecvStream,
-    buf: &mut [u8],
-) -> Result<bool> {
+async fn read_exact_or_eof(recv: &mut iroh::endpoint::RecvStream, buf: &mut [u8]) -> Result<bool> {
     let mut offset = 0;
     while offset < buf.len() {
-        match recv.read(&mut buf[offset..]).await.context("read browser file stream bytes")? {
+        match recv
+            .read(&mut buf[offset..])
+            .await
+            .context("read browser file stream bytes")?
+        {
             Some(read) => offset += read,
             None if offset == 0 => return Ok(false),
             None => anyhow::bail!("browser file stream ended mid-frame"),
@@ -641,7 +724,8 @@ fn read_chunk(
     chunk_index: u64,
 ) -> Result<(Vec<u8>, [u8; 32])> {
     let chunk_size = u64::from(descriptor.chunk_size_bytes);
-    let start = usize::try_from(chunk_index * chunk_size).context("browser chunk start overflow")?;
+    let start =
+        usize::try_from(chunk_index * chunk_size).context("browser chunk start overflow")?;
     let end = usize::try_from(((chunk_index + 1) * chunk_size).min(descriptor.size_bytes))
         .context("browser chunk end overflow")?;
     if start > end || end > bytes.len() {

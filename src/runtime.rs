@@ -238,7 +238,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn launcher_script_runs_downloaded_binary_and_cleans_workspace() {
+    fn launcher_script_reuses_verified_binary_until_explicit_cleanup() {
         let temp = TempDir::new().unwrap();
         let probe_dir = temp.path().join("probe");
         fs::create_dir_all(&probe_dir).unwrap();
@@ -258,6 +258,7 @@ mod tests {
         let mut permissions = fs::metadata(&stub).unwrap().permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&stub, permissions).unwrap();
+        write_sha256_sidecar(&stub);
 
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/startup.sh");
         let file_url = format!("file://{}", stub.display());
@@ -265,6 +266,8 @@ mod tests {
             .arg(&script)
             .arg("--url")
             .arg(&file_url)
+            .arg("--runtime-parent")
+            .arg(temp.path())
             .arg("--")
             .arg(&probe_dir)
             .arg("payload-ok")
@@ -280,8 +283,32 @@ mod tests {
         let payload = fs::read_to_string(probe_dir.join("payload.txt")).unwrap();
 
         assert_eq!(payload.trim(), "payload-ok");
-        assert!(!exe_path.exists(), "downloaded executable was not removed");
-        assert!(!runtime_root.exists(), "runtime workspace was not removed");
+        assert!(
+            exe_path.exists(),
+            "verified executable was unexpectedly removed"
+        );
+        assert!(
+            runtime_root.exists(),
+            "retryable runtime state was unexpectedly removed"
+        );
+
+        let cleanup = Command::new("sh")
+            .env("XDG_CACHE_HOME", temp.path())
+            .arg(&script)
+            .arg("--runtime-parent")
+            .arg(temp.path())
+            .arg("--cleanup")
+            .status()
+            .unwrap();
+        assert!(cleanup.success(), "launcher cleanup exited unsuccessfully");
+        assert!(
+            !exe_path.exists(),
+            "explicit cleanup did not remove the executable"
+        );
+        assert!(
+            !runtime_root.exists(),
+            "explicit cleanup did not remove runtime state"
+        );
     }
 
     #[cfg(unix)]
@@ -305,6 +332,7 @@ mod tests {
         let mut permissions = fs::metadata(&stub).unwrap().permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&stub, permissions).unwrap();
+        write_sha256_sidecar(&stub);
 
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/startup.sh");
         let file_url = format!("file://{}", stub.display());
@@ -325,11 +353,23 @@ mod tests {
         let runtime_root = PathBuf::from(runtime_root.trim());
 
         assert_eq!(exe_path.file_name().unwrap(), "altair-vega");
-        assert_eq!(exe_path.parent().unwrap().file_name().unwrap(), "bin");
-        assert!(!exe_path.exists(), "session executable was not removed");
+        assert_eq!(
+            exe_path
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap(),
+            "binaries"
+        );
         assert!(
-            !runtime_root.exists(),
-            "session runtime root was not removed"
+            exe_path.exists(),
+            "session executable was unexpectedly removed"
+        );
+        assert!(
+            runtime_root.exists(),
+            "session runtime root was unexpectedly removed"
         );
     }
 
@@ -338,11 +378,13 @@ mod tests {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/startup.ps1");
         let contents = fs::read_to_string(&script).unwrap();
         assert!(contents.contains(super::RUNTIME_ROOT_ENV));
-        assert!(contents.contains(super::KEEP_RUNTIME_ENV));
         assert!(contents.contains("Remove-Item"));
         assert!(contents.contains("Invoke-WebRequest"));
-        assert!(contents.contains("Register-EngineEvent"));
-        assert!(contents.contains("altair-vega-session-"));
+        assert!(contents.contains("Get-FileHash"));
+        assert!(contents.contains("-Cleanup"));
+        assert!(contents.contains("altair-vega-launcher-"));
+        assert!(!contents.contains("Register-EngineEvent"));
+        assert!(!contents.contains("$env:TMPDIR ="));
     }
 
     #[test]
@@ -373,5 +415,21 @@ mod tests {
             .arg("$PSVersionTable.PSVersion.ToString()")
             .status()
             .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(unix)]
+    fn write_sha256_sidecar(path: &Path) {
+        let output = Command::new("sha256sum")
+            .arg(path)
+            .output()
+            .or_else(|_| {
+                Command::new("shasum")
+                    .args(["-a", "256"])
+                    .arg(path)
+                    .output()
+            })
+            .expect("sha256sum or shasum must be available for launcher tests");
+        assert!(output.status.success(), "checksum command failed");
+        fs::write(format!("{}.sha256", path.display()), output.stdout).unwrap();
     }
 }

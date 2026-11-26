@@ -7,6 +7,7 @@ Altair Vega has three release surfaces:
 - Native CLI: Rust binary for pairing, text transfer, file transfer, browser bridging, and two-peer folder sync.
 - Browser app: installable static SolidJS/PWA frontend plus a Rust/WASM peer package built with `wasm-pack`.
 - Rendezvous Worker: Cloudflare Worker/Durable Object WebSocket room service used only for peer discovery and signaling.
+- Diagnostics Worker: separate Cloudflare Worker that accepts bounded connectivity reports and writes them to private R2 storage; it is not part of the transfer service.
 
 Native peers use `iroh` directly for endpoint connections, local discovery, file transfer, and native sync. Browser peers use the WASM peer package for browser-to-browser transfer behavior and the frontend rendezvous client for WebSocket signaling. The rendezvous Worker coordinates room membership and forwards signaling messages; it does not persist room contents or transferred payloads. The browser shell is served statically and can be cached by its service worker; app updates are fetched in the background and take effect on the next refresh/new page lifecycle.
 
@@ -27,6 +28,7 @@ High-level data flow:
 - `web/browser-wasm/`: Rust/WASM browser peer package exposed to the frontend.
 - `web/frontend/`: SolidJS static/PWA web app, browser state, message rendering, and rendezvous client.
 - `web/rendezvous-worker/`: Cloudflare Worker and Durable Object rendezvous service.
+- `web/diagnostics-worker/`: optional diagnostics ingestion Worker and its unit tests.
 - `scripts/`: disposable native launcher scripts for POSIX and PowerShell.
 
 ## Development Setup
@@ -48,8 +50,9 @@ rustup target add wasm32-unknown-unknown
 Install JavaScript dependencies:
 
 ```sh
-npm install --prefix web/frontend
-npm install --prefix web/rendezvous-worker
+npm ci --prefix web/frontend
+npm ci --prefix web/rendezvous-worker
+npm ci --prefix web/diagnostics-worker
 ```
 
 Prepare local environment defaults:
@@ -90,6 +93,19 @@ Run the rendezvous Worker locally:
 npm run dev --prefix web/rendezvous-worker
 ```
 
+Validate the diagnostics Worker without publishing it:
+
+```sh
+npm run types --prefix web/diagnostics-worker
+npm run check --prefix web/diagnostics-worker
+npm run test --prefix web/diagnostics-worker
+npm run deploy:dry-run --prefix web/diagnostics-worker
+```
+
+The diagnostics Worker type-generation command intentionally uses `wrangler types --strict-vars=false`: deployment configuration supplies its binding values. A dry run does not publish a Worker or enable collection.
+
+Its tests include HTTP requests to a local Worker runtime with emulated R2, checking persistence across restart and rejection without storage writes. These do not validate deployed Cloudflare configuration or retention rules.
+
 Build the native release binary:
 
 ```sh
@@ -118,6 +134,10 @@ Worker validation:
 
 ```sh
 npm run dev --prefix web/rendezvous-worker
+npm run types --prefix web/diagnostics-worker
+npm run check --prefix web/diagnostics-worker
+npm run test --prefix web/diagnostics-worker
+npm run deploy:dry-run --prefix web/diagnostics-worker
 ```
 
 Release validation still requires manual drills on actual target systems for macOS, Windows, browser matrix coverage, launcher behavior, reconnect behavior, and long-running native sync.
@@ -126,4 +146,4 @@ PWA/service-worker behavior should be validated in a browser application panel a
 
 ## Release Discipline
 
-Product functionality is frozen during release hardening. Changes should be limited to bug fixes, validation shorthand, packaging, release automation, and documentation. Do not add new product features unless the release scope is explicitly reopened.
+Product functionality is frozen during release hardening. The narrow exception is launcher reliability and privacy-preserving diagnostics. Other changes should be limited to bug fixes, validation shorthand, packaging, release automation, and documentation. Do not add new product features unless the release scope is explicitly reopened.

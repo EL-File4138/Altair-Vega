@@ -31,8 +31,11 @@ run() {
 }
 
 run cargo fmt --check
+run cargo fmt --manifest-path web/browser-wasm/Cargo.toml --check
 run cargo clippy --all-targets --all-features -- -D warnings
 run cargo test
+run cargo test --all-features
+run sh scripts/test-startup.sh
 
 if [ "$mode" = full ] || [ "$mode" = release ]; then
   run cargo build --release
@@ -42,6 +45,9 @@ run npm run build:wasm:release --prefix web/frontend
 run npm run build --prefix web/frontend
 run npm run check --prefix web/rendezvous-worker
 run npm run deploy:dry-run --prefix web/rendezvous-worker
+run npm run check --prefix web/diagnostics-worker
+run npm test --prefix web/diagnostics-worker
+run npm run deploy:dry-run --prefix web/diagnostics-worker
 
 if [ "$mode" = release ] && [ -d dist/release ]; then
   if command -v sha256sum >/dev/null 2>&1; then

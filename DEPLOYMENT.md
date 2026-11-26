@@ -7,6 +7,8 @@ Altair Vega's hosted deployment has two public parts:
 - A static installable browser app built from `web/frontend`.
 - A Cloudflare Worker with Durable Objects built from `web/rendezvous-worker`.
 
+Optional diagnostics ingestion is a separate `web/diagnostics-worker` deployment. It accepts only sanitized connectivity reports and stores them in a private R2 bucket; it has no read route and is not transfer storage.
+
 The rendezvous service only coordinates peer discovery and signaling. It should not store transferred messages, files, sync data, private keys, or long-lived user state.
 
 ## Prerequisites
@@ -26,8 +28,9 @@ rustup target add wasm32-unknown-unknown
 Install package dependencies:
 
 ```sh
-npm install --prefix web/rendezvous-worker
-npm install --prefix web/frontend
+npm ci --prefix web/rendezvous-worker
+npm ci --prefix web/frontend
+npm ci --prefix web/diagnostics-worker
 ```
 
 ## Configuration
@@ -130,20 +133,46 @@ web/frontend/dist/
 
 Any static host is acceptable if it serves the files over HTTPS and preserves the generated asset paths. HTTPS is required for production service-worker/PWA behavior.
 
-### Cloudflare Pages
+## Diagnostics Worker
+
+Diagnostics collection is disabled by default. Before any real deployment, configure `web/diagnostics-worker/wrangler.jsonc` with the Cloudflare account, private `REPORTS` R2 bucket, deployed hostname, and allowed browser origins. Keep `workers_dev=false`, `INGEST_ENABLED=false`, and `ALLOWED_ORIGINS=''` until the endpoint and retention controls have been validated.
+
+Validate the Worker without publishing it:
+
+```sh
+npm run types --prefix web/diagnostics-worker
+npm run check --prefix web/diagnostics-worker
+npm run test --prefix web/diagnostics-worker
+npm run deploy:dry-run --prefix web/diagnostics-worker
+```
+
+Configure an R2 lifecycle rule for 30-day retention and verify that it is applied before enabling ingestion. R2 expiration is asynchronous and is not an exact 30-day deletion deadline. Once the deployment is validated, set the origin allowlist and `INGEST_ENABLED=true`, deploy, and build clients with the HTTPS endpoint ending in `/v1/reports`:
+
+```sh
+VITE_TELEMETRY_URL=https://diagnostics.example.com/v1/reports npm run build --prefix web/frontend
+ALTAIR_VEGA_TELEMETRY_URL=https://diagnostics.example.com/v1/reports cargo build --release --features telemetry
+```
+
+No client secret is used: CORS controls browser origin access but is not authentication. Configure an operator kill switch, WAF rules, and account budget controls. The per-location/client and total Worker limits are approximate protections, not a global cost cap. Worker observability should remain disabled and metadata minimized, but Cloudflare still processes network traffic to operate the service.
+
+## Cloudflare Pages
 
 Cloudflare Pages should use Direct Upload from CI rather than Pages Git builds because the browser build requires Rust/Cargo for `wasm-pack`.
 
-Create or keep a Pages project, then add these GitHub Actions secrets:
+Create or keep a Pages project, then add these GitHub Actions secrets to the deployment workflow you operate:
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN` with Cloudflare Pages edit permission
 
-The repository workflow builds and deploys Pages on pushes to `master` with:
+`.github/workflows/ci.yml` builds the browser app and deploys the `altair-vega` Pages project on pushes to `master`. Configure the repository variable `ALTAIR_VEGA_TELEMETRY_URL` with the validated HTTPS collector endpoint before publishing; deployment deliberately fails when it is absent. For a different Pages project, adjust the workflow's project name and rendezvous URL.
 
-- `npm run build:wasm:release --prefix web/frontend`
-- `VITE_DEFAULT_RENDEZVOUS_URL=wss://your-worker.example.com/__altair_vega_rendezvous --prefix web/frontend`
-- `wrangler pages deploy web/frontend/dist --project-name=<your-pages-project-name> --branch=master`
+An equivalent manual build and upload is:
+
+```sh
+npm run build:wasm:release --prefix web/frontend
+VITE_DEFAULT_RENDEZVOUS_URL=wss://your-worker.example.com/__altair_vega_rendezvous VITE_TELEMETRY_URL=https://diagnostics.example.com/v1/reports npm run build --prefix web/frontend
+npx wrangler pages deploy web/frontend/dist --project-name=<your-pages-project-name> --branch=master
+```
 
 For another deployment target, set `VITE_DEFAULT_RENDEZVOUS_URL` to that target's Worker rendezvous URL in the workflow before the frontend build step.
 
@@ -179,6 +208,8 @@ After deploying both the Worker and frontend:
 - Use HTTPS for the static app and `wss://` for the Worker URL in production.
 - Treat Cloudflare account tokens and deployment credentials as secrets.
 - Do not add persistent storage of transfer payloads to the rendezvous service.
+- Keep diagnostics reports in the dedicated private R2 bucket; do not add a read route or use it for transfer data.
+- Do not enable diagnostics collection until the deployment, origin allowlist, and verified 30-day lifecycle rule are in place.
 - Rebuild and republish the browser app when changing the default rendezvous URL.
 - When republishing static files, expect already-open clients to keep using their current cached app shell until refresh/new lifecycle.
 - Prefer a custom domain for production so native and browser users can rely on a stable endpoint.

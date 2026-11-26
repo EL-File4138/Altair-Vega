@@ -81,7 +81,7 @@ impl DocsSyncNode {
                 state_dir.join("docs-state").display()
             )
         })?;
-        let mut endpoint_builder = Endpoint::builder(presets::N0)
+        let mut endpoint_builder = altair_vega::diagnostics::attach(Endpoint::builder(presets::N0))
             .alpns(vec![
                 BLOBS_ALPN.to_vec(),
                 GOSSIP_ALPN.to_vec(),

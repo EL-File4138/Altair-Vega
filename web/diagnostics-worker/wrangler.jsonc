@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "altair-vega-diagnostics",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-19",
+  "workers_dev": false,
+  "preview_urls": false,
+  "upload_source_maps": true,
+  "observability": { "enabled": false },
+  "vars": { "INGEST_ENABLED": "false", "ALLOWED_ORIGINS": "" },
+  "r2_buckets": [{ "binding": "REPORTS", "bucket_name": "altair-vega-diagnostics" }],
+  "ratelimits": [
+    { "name": "CLIENT_LIMIT", "namespace_id": "413801", "simple": { "limit": 12, "period": 60 } },
+    { "name": "TOTAL_LIMIT", "namespace_id": "413802", "simple": { "limit": 120, "period": 60 } }
+  ]
+}

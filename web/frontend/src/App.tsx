@@ -36,14 +36,18 @@ import SidebarFiles from './components/SidebarFiles'
 import SidebarSettings from './components/SidebarSettings'
 
 import './App.css'
+import { diagnostic, recordDiagnostic, startDiagnostics, submitDiagnostics } from './lib/diagnostics'
 
 export default function App() {
   let announceTimer = 0
   let backdropTimer = 0
+  let stopDiagnostics: (() => void) | undefined
   const [renderSidebarBackdrop, setRenderSidebarBackdrop] = createSignal(state.sidebarOpen)
   const [chatDragDepth, setChatDragDepth] = createSignal(0)
 
   onMount(async () => {
+    stopDiagnostics = startDiagnostics()
+    diagnostic('endpoint', 'start')
     document.documentElement.setAttribute('data-theme', state.theme)
     const queryCode = new URLSearchParams(window.location.search).get('code')?.trim()
     if (queryCode) {
@@ -55,17 +59,22 @@ export default function App() {
     }
     try {
       const node = await spawnNode()
+      diagnostic('endpoint', 'ok')
+      void submitDiagnostics()
       setNode(node)
       const files = await listReceivedFiles()
       if (files.length > 0) setReceivedFiles(files)
       attachEventStream(node)
     } catch (err) {
+      diagnostic('endpoint', 'failed')
+      void submitDiagnostics('failure')
       setConnectionState('error')
       addToast('error', `Failed to start: ${err instanceof Error ? err.message : String(err)}`)
     }
   })
 
   onCleanup(() => {
+    stopDiagnostics?.()
     if (announceTimer) window.clearInterval(announceTimer)
     if (backdropTimer) window.clearTimeout(backdropTimer)
     state.roomConnection?.close()
@@ -98,13 +107,15 @@ export default function App() {
     state.roomConnection?.close()
     if (announceTimer) { window.clearInterval(announceTimer); announceTimer = 0 }
     setConnectionState('connecting')
+    diagnostic('rendezvous', 'start')
 
     const conn = connectRoom(normalized, state.endpointId, {
-      onOpen() { setConnectionState('connected'); addToast('success', `Joined room`) },
+      onOpen() { diagnostic('rendezvous', 'ok'); setConnectionState('connected'); addToast('success', `Joined room`) },
       onEvent(event: RendezvousEvent) { handleRendezvousEvent(event) },
-      onClose(_code, reason) { setConnectionState('fallback'); addToast('warning', reason ?? 'Room service disconnected, using local fallback') },
-      onError() { addToast('warning', 'Room service connection failed') },
+      onClose(_code, reason) { diagnostic('rendezvous', 'failed'); void submitDiagnostics('failure'); setConnectionState('fallback'); addToast('warning', reason ?? 'Room service disconnected, using local fallback') },
+      onError() { diagnostic('rendezvous', 'failed'); void submitDiagnostics('failure'); addToast('warning', 'Room service connection failed') },
       onReconnecting(_code, attempt, delayMs) {
+        diagnostic('rendezvous', 'retry', attempt)
         setConnectionState('reconnecting')
         addToast('warning', `Reconnecting to room service (${attempt}) in ${Math.round(delayMs / 1000)}s`)
       },
@@ -140,6 +151,10 @@ export default function App() {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      if (value && typeof value === 'object' && value.type === 'diagnostic') {
+        recordDiagnostic(value.event)
+        continue
+      }
       await handleBrowserEvent(normalizeBrowserEvent(value as RawBrowserEvent), node)
     }
   }
@@ -183,16 +198,21 @@ export default function App() {
   async function handleSendMessage(text: string, mode: MessageRenderMode) {
     if (!state.node || !state.selectedPeerId) return
     const body = encodeMessageBody(text, mode)
+    diagnostic('transfer', 'start')
     try {
       await state.node.send_message(state.selectedPeerId, body)
+      diagnostic('transfer', 'ok')
       addChatMessage({ id: generateId(), direction: 'sent', variant: 'text', peerEndpointId: state.selectedPeerId, timestamp: Date.now(), text: body })
     } catch (err) {
+      diagnostic('transfer', 'failed')
+      void submitDiagnostics('failure')
       addToast('error', `Send failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
   async function handleSendFile(file: File) {
     if (!state.node || !state.selectedPeerId) return
+    diagnostic('transfer', 'start')
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
       const { hash_bytes_hex } = await import('altair-vega-browser')
@@ -208,8 +228,11 @@ export default function App() {
       })
       const missingRanges = resume?.missingRanges ?? fullMissingRanges(bytes.byteLength, 256 * 1024)
       await state.node.send_file_with_ranges(state.selectedPeerId, file.name, mimeType, bytes, missingRanges)
+      diagnostic('transfer', 'ok')
       updateFileInChat(storageKey, { bytesComplete: bytes.byteLength, completed: true })
     } catch (err) {
+      diagnostic('transfer', 'failed')
+      void submitDiagnostics('failure')
       addToast('error', `File send failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }

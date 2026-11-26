@@ -52,7 +52,7 @@ pub async fn run_browser_peer(code: String, room_url: String, output_dir: PathBu
         .await
         .with_context(|| format!("create browser peer output dir at {}", output_dir.display()))?;
 
-    let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+    let endpoint = altair_vega::diagnostics::attach(Endpoint::builder(iroh::endpoint::presets::N0))
         .alpns(vec![
             BROWSER_MESSAGE_ALPN.to_vec(),
             BROWSER_FILE_ALPN.to_vec(),

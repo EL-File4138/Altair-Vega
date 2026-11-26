@@ -35,32 +35,33 @@ Try the [hosted web app](https://tools.elfile4138.moe/altair-vega/).
 
 ***
 
-Run the latest release through the disposable launcher:
+In Bash, source the latest-release launcher to make `altair-vega` available for the current shell:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.sh | sh -s -- help
+. <(curl -fsSL https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.sh)
+altair-vega help
 ```
 
-The launcher detects Linux/macOS and CPU architecture, downloads the matching latest release binary into a temporary runtime workspace, runs it, and cleans up when it exits.
+The launcher detects Linux/macOS and CPU architecture, downloads and SHA-256-verifies the matching latest release binary, then reuses its private cache for the current boot/login scope.
 
 Send a text message from one machine:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.sh | sh -s -- send text "hello from Altair-Vega"
+altair-vega send text "hello from Altair-Vega"
 ```
 
 Receive from another machine with the printed code:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.sh | sh -s -- receive text <CODE>
+altair-vega receive text <CODE>
 ```
 
 Expected result: the receiver prints the transferred message after pairing through same-LAN discovery or short-code rendezvous fallback.
 
 Cross-platform launcher forms:
 
-- **Linux/macOS:** `curl -fsSL https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.sh | sh -s -- <altair-vega args>`
-- **Windows PowerShell:** `& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.ps1'))) -- <altair-vega args>`
+- **Linux/macOS (Bash):** `. <(curl -fsSL https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.sh)`; then run `altair-vega <args>` in that shell.
+- **Windows PowerShell:** `. ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/EL-File4138/Altair-Vega/main/scripts/startup.ps1')))`; then run `altair-vega <args>` in that session.
 - **Custom repo/binary:** set `ALTAIR_VEGA_GITHUB_REPO=<OWNER>/<REPO>`, or pass `--url <binary-url>` / `-Url <binary-url>`.
 
 ## Install
@@ -82,6 +83,7 @@ This builds the native CLI locally and installs `altair-vega` into Cargo's binar
 - Prefer native same-LAN discovery when available, with short-code rendezvous as fallback.
 - Run the native CLI from disposable launcher scripts with RAM-first runtime state where available.
 - Use raw `iroh` tickets with `--naked` when bypassing short-code rendezvous is preferred.
+- Official builds collect bounded connectivity diagnostics, with native runtime opt-out; diagnostics never include transfer payloads, files, codes, tickets, raw errors, URLs, network addresses, or stable peer IDs.
 
 ## Use Cases
 
@@ -118,11 +120,18 @@ Altair-Vega has a shared disposable-runtime contract in the Rust core plus platf
 
 Launcher behavior:
 
-- The POSIX launcher chooses `XDG_RUNTIME_DIR`, then `/dev/shm`, then the system temp directory.
-- The PowerShell launcher chooses the Windows temp directory unless `-RuntimeParent` is provided.
-- Sets `ALTAIR_VEGA_RUNTIME_ROOT` and `TMPDIR` for the launched process so default internal state can stay RAM-first when possible.
-- Removes the fetched executable and runtime workspace on exit by default.
-- Supports `--keep-runtime` or `-KeepRuntime` when you need to inspect the temp workspace after exit.
+- The POSIX launcher chooses `XDG_RUNTIME_DIR`, then `/dev/shm`, then the system temp directory; PowerShell uses the Windows temp directory unless `-RuntimeParent` is supplied.
+- Each launched child receives its own `ALTAIR_VEGA_RUNTIME_ROOT`. Parent shell environment and profiles are not modified apart from the session `PATH` added by sourcing/dot-sourcing.
+- The executable and its SHA-256 sidecar are cached under a key derived from the binary URL, checksum URL, and optional checksum pin. The sidecar is checked before every use, including the first cached run.
+- Failed or interrupted commands retain their cache and runtime state for retry. Run `--cleanup` or `-Cleanup` to remove inactive current and prior scopes; active scopes are not removed.
+- Cache lifetime follows the login/boot scope, not a universal reboot-deletion promise. Disk-backed temp caches can survive OS cleanup; a no-exec runtime location falls back to the user cache.
+- `--keep-runtime` and `-KeepRuntime` remain accepted for backward compatibility but no longer change behavior.
+
+## Connectivity Diagnostics
+
+Official native release builds enable the optional `telemetry` feature and use the HTTPS endpoint embedded at build time. Third-party builds omit it by default. Disable native collection with `--no-telemetry` or `ALTAIR_VEGA_TELEMETRY=0`; this also disables local report collection. With collection enabled, `--diagnostics-output <path>` explicitly writes a sanitized JSON report. When collection cannot be delivered, the native client writes a temporary JSON report instead (mode `600` on POSIX).
+
+The browser app submits the same bounded diagnostics only when its HTTPS `VITE_TELEMETRY_URL` is configured. The **Telemetry** link in Settings explains this behavior. Reports retain at most 96 events (the first 16 and latest 80), are limited to 32 KiB, and use a strict schema of enum, counter, and duration fields. Automatic submission is limited to eight attempts per native process or browser page.
 
 ## Contributing
 

@@ -1275,7 +1275,8 @@ async fn spawn_native_blob_provider(
     let store = FsStore::load(provider_dir)
         .await
         .with_context(|| format!("load native provider store at {}", provider_dir.display()))?;
-    let endpoint = Endpoint::bind(presets::N0)
+    let endpoint = crate::diagnostics::attach(Endpoint::builder(presets::N0))
+        .bind()
         .await
         .context("bind native blob provider endpoint")?;
     let blobs = BlobsProtocol::new(&store, None);
@@ -1330,7 +1331,8 @@ async fn fetch_native_blob(store_dir: &Path, ticket: &BlobTicket) -> Result<Nati
         .context("inspect native store before fetch")?;
 
     if !local.is_complete() {
-        let endpoint = Endpoint::bind(presets::N0)
+        let endpoint = crate::diagnostics::attach(Endpoint::builder(presets::N0))
+            .bind()
             .await
             .context("bind native blob fetch endpoint")?;
         let connection = endpoint
@@ -1381,7 +1383,8 @@ async fn seed_native_blob_ranges(
     let store = FsStore::load(store_dir)
         .await
         .with_context(|| format!("load native seed store at {}", store_dir.display()))?;
-    let endpoint = Endpoint::bind(presets::N0)
+    let endpoint = crate::diagnostics::attach(Endpoint::builder(presets::N0))
+        .bind()
         .await
         .context("bind native partial seed endpoint")?;
     let connection = endpoint

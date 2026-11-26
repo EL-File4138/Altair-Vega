@@ -9,6 +9,7 @@ import './SidebarSettings.css'
 const RENDEZVOUS_URL_STORAGE_KEY = 'altair-vega:rendezvous-url'
 const RENDEZVOUS_HISTORY_KEY = 'altair-vega:rendezvous-history'
 const RELEASE_URL = `https://github.com/EL-File4138/Altair-Vega/releases/tag/v${packageInfo.version}`
+const TELEMETRY_URL = 'https://github.com/EL-File4138/Altair-Vega/wiki/Telemetry'
 
 /**
  * Compile-time default rendezvous URL.
@@ -281,6 +282,8 @@ export default function SidebarSettings() {
 
           <footer class="sidebar-settings__footer" aria-label="Project links">
             <a href={RELEASE_URL} target="_blank" rel="noreferrer">v{packageInfo.version}</a>
+            <span aria-hidden="true">|</span>
+            <a href={TELEMETRY_URL} target="_blank" rel="noreferrer">Telemetry</a>
             <span aria-hidden="true">|</span>
             <a href="https://github.com/EL-File4138/Altair-Vega" target="_blank" rel="noreferrer">GitHub</a>
             <span aria-hidden="true">|</span>

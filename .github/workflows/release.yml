@@ -13,6 +13,8 @@ jobs:
   native:
     name: Native ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      ALTAIR_VEGA_TELEMETRY_URL: ${{ vars.ALTAIR_VEGA_TELEMETRY_URL }}
     strategy:
       fail-fast: false
       matrix:
@@ -21,7 +23,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+      - name: Require official diagnostics endpoint
+        shell: bash
+        run: |
+          case "$ALTAIR_VEGA_TELEMETRY_URL" in
+            https://*/v1/reports) ;;
+            *) echo 'Configure ALTAIR_VEGA_TELEMETRY_URL repository variable before releasing.' >&2; exit 1 ;;
+          esac
+      - run: cargo build --release --features telemetry
         env:
           ALTAIR_VEGA_DEFAULT_RENDEZVOUS: wss://tools.elfile4138.moe/altair-vega/__altair_vega_rendezvous
       - name: Package artifact
@@ -35,8 +44,17 @@ jobs:
   browser:
     name: Browser Static Assets
     runs-on: ubuntu-latest
+    env:
+      VITE_TELEMETRY_URL: ${{ vars.ALTAIR_VEGA_TELEMETRY_URL }}
     steps:
       - uses: actions/checkout@v4
+      - name: Require official diagnostics endpoint
+        shell: bash
+        run: |
+          case "$VITE_TELEMETRY_URL" in
+            https://*/v1/reports) ;;
+            *) echo 'Configure ALTAIR_VEGA_TELEMETRY_URL repository variable before releasing.' >&2; exit 1 ;;
+          esac
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

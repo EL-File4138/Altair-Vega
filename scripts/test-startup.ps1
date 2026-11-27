@@ -1,11 +1,12 @@
 # Run with Windows PowerShell, whose compiler can emit the small test executable.
 $ErrorActionPreference = 'Stop'
 $launcher = Join-Path $PSScriptRoot 'startup.ps1'
-$work = Join-Path ([IO.Path]::GetTempPath()) ('altair-vega-launcher-test-' + [Guid]::NewGuid().ToString('N'))
+$work = Join-Path ([IO.Path]::GetTempPath()) ('av-' + [IO.Path]::GetRandomFileName())
 $beforePath = $env:PATH
 $beforePin = $env:ALTAIR_VEGA_BIN_SHA256
 $beforeUrl = $env:ALTAIR_VEGA_BIN_URL
 $beforeChecksumUrl = $env:ALTAIR_VEGA_BIN_CHECKSUM_URL
+$beforeLocalAppData = $env:LOCALAPPDATA
 $jobs = @()
 function Assert-Test($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 try {
@@ -13,9 +14,10 @@ try {
     $env:ALTAIR_VEGA_BIN_URL = $null
     $env:ALTAIR_VEGA_BIN_CHECKSUM_URL = $null
     New-Item -ItemType Directory -Path $work | Out-Null
+    $env:LOCALAPPDATA = Join-Path $work 'fallback'
     $cache = Join-Path $work 'cache'
     $probe = Join-Path $work 'probe'
-    New-Item -ItemType Directory -Path $cache, $probe | Out-Null
+    New-Item -ItemType Directory -Path $cache, $probe, $env:LOCALAPPDATA | Out-Null
     $stub = Join-Path $work 'stub.exe'
     Add-Type -OutputAssembly $stub -OutputType ConsoleApplication -TypeDefinition @'
 using System;
@@ -84,5 +86,6 @@ public static class AltairLauncherTest {
     $env:ALTAIR_VEGA_BIN_SHA256 = $beforePin
     $env:ALTAIR_VEGA_BIN_URL = $beforeUrl
     $env:ALTAIR_VEGA_BIN_CHECKSUM_URL = $beforeChecksumUrl
+    $env:LOCALAPPDATA = $beforeLocalAppData
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }

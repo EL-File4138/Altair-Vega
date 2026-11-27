@@ -1,17 +1,34 @@
 # Preparation runs in a child scope even when dot-sourced. Only PATH is published.
 $_AltairVegaLauncherResult = & {
-param(
-    [string]$Url = $env:ALTAIR_VEGA_BIN_URL,
-    [string]$ChecksumUrl = $env:ALTAIR_VEGA_BIN_CHECKSUM_URL,
-    [string]$RuntimeParent,
-    [switch]$Cleanup,
-    [switch]$KeepRuntime,
-    [switch]$Help,
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$CommandArgs
-)
+param([object[]]$LauncherArgs)
 
 $ErrorActionPreference = 'Stop'
+
+$Url = $env:ALTAIR_VEGA_BIN_URL
+$ChecksumUrl = $env:ALTAIR_VEGA_BIN_CHECKSUM_URL
+$RuntimeParent = $null
+$Cleanup = $KeepRuntime = $Help = $false
+$index = 0
+# Only consume named launcher options; native arguments must not fill unset options.
+while ($index -lt $LauncherArgs.Count) {
+    $option = $LauncherArgs[$index]
+    if ($option -eq '--') { $index++; break }
+    if ($option -in '-Url', '-ChecksumUrl', '-RuntimeParent') {
+        $index++
+        if ($index -ge $LauncherArgs.Count -or $LauncherArgs[$index] -eq '--') { throw "$option requires a value" }
+        switch ($option) {
+            '-Url' { $Url = [string]$LauncherArgs[$index] }
+            '-ChecksumUrl' { $ChecksumUrl = [string]$LauncherArgs[$index] }
+            '-RuntimeParent' { $RuntimeParent = [string]$LauncherArgs[$index] }
+        }
+    } elseif ($option -eq '-Cleanup') { $Cleanup = $true }
+    elseif ($option -eq '-KeepRuntime') { $KeepRuntime = $true }
+    elseif ($option -eq '-Help') { $Help = $true }
+    else { break }
+    $index++
+}
+$CommandArgs = @()
+if ($index -lt $LauncherArgs.Count) { $CommandArgs = $LauncherArgs[$index..($LauncherArgs.Count - 1)] }
 
 function Show-Usage {
 @"
@@ -83,8 +100,18 @@ function Get-NormalizedSha256 {
 function Download-AltairVegaFile {
     param([Parameter(Mandatory = $true)][string]$SourceUrl, [Parameter(Mandatory = $true)][string]$TargetPath)
     $uri = [Uri]$SourceUrl
-    if ($uri.IsFile) { Copy-Item -LiteralPath $uri.LocalPath -Destination $TargetPath -Force }
-    else { Invoke-WebRequest -Uri $SourceUrl -OutFile $TargetPath }
+    if ($uri.IsFile) {
+        # Create the destination in the cache and copy bytes, not source file metadata.
+        $source = [System.IO.File]::OpenRead($uri.LocalPath)
+        try {
+            $target = [System.IO.File]::Create($TargetPath)
+            try { $source.CopyTo($target) }
+            finally { $target.Dispose() }
+        }
+        finally { $source.Dispose() }
+    } else {
+        Invoke-WebRequest -Uri $SourceUrl -OutFile $TargetPath -UseBasicParsing
+    }
 }
 
 function Test-ExecutableCacheDirectory {
@@ -116,7 +143,7 @@ function Test-ExecutableCacheDirectory {
         Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
         return $result
     }
-    catch { return $false }
+    catch { Write-Warning "Cannot use launcher cache ${Path}: $($_.Exception.Message)"; return $false }
 }
 
 function Assert-SafeParent {
@@ -130,7 +157,11 @@ function Assert-SafeParent {
         foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
             # Other users must not be able to rename existing directories or alter ACLs.
             $unsafe = [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-            if ($rule.AccessControlType -eq 'Allow' -and $trusted -notcontains $rule.IdentityReference.Value -and ($rule.FileSystemRights -band $unsafe)) { throw 'writable launcher ancestor' }
+            if ($rule.AccessControlType -eq 'Allow' -and
+                -not ($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -and
+                $trusted -notcontains $rule.IdentityReference.Value -and ($rule.FileSystemRights -band $unsafe)) {
+                throw "writable launcher ancestor: $($current.FullName) ($($rule.IdentityReference.Value))"
+            }
         }
         $current = $current.Parent
     }
@@ -165,9 +196,12 @@ function Exit-AltairVegaDownloadLock {
 }
 
 function Write-AltairVegaWrapper {
-    param([Parameter(Mandatory = $true)][string]$WrapperPath, [Parameter(Mandatory = $true)][string]$BinaryKey)
-    $temporaryWrapper = "$WrapperPath.tmp.$([Guid]::NewGuid().ToString('N'))"
-    $helperPath = Join-Path (Split-Path -Parent $WrapperPath) 'altair-vega-wrapper.ps1'
+    param([Parameter(Mandatory = $true)][string]$WrapperPath, [Parameter(Mandatory = $true)][string]$CacheRoot)
+    # Preparation holds the cache mutex. Stage files at the scope root to
+    # keep temporary paths within Windows PowerShell's path length limit.
+    $temporaryWrapper = Join-Path $CacheRoot 'wrapper.cmd.tmp'
+    $temporaryHelper = Join-Path $CacheRoot 'wrapper.ps1.tmp'
+    $helperPath = Join-Path (Split-Path -Parent $WrapperPath) 'run.ps1'
     @'
 $ErrorActionPreference = 'Stop'
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
@@ -186,20 +220,20 @@ try {
         [System.IO.File]::WriteAllText($lease, [System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks.ToString())
     }
     finally { $mutex.ReleaseMutex() }
-    & (Join-Path $PSScriptRoot '..\altair-vega.exe') @args
+    $env:ALTAIR_VEGA_RUNTIME_ROOT = Join-Path $root 'runtime'
+    & $binary @args
     $code = $LASTEXITCODE
 } finally {
     $mutex.Dispose()
     Remove-Item -LiteralPath $lease -Force -ErrorAction SilentlyContinue
 }
 exit $code
-'@ | Set-Content -LiteralPath "$helperPath.tmp" -Encoding ascii
-    Move-Item -LiteralPath "$helperPath.tmp" -Destination $helperPath -Force
+'@ | Set-Content -LiteralPath $temporaryHelper -Encoding ascii
+    Move-Item -LiteralPath $temporaryHelper -Destination $helperPath -Force
 @"
 @echo off
 setlocal
-set "ALTAIR_VEGA_RUNTIME_ROOT=%~dp0..\..\..\runtime"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0altair-vega-wrapper.ps1" %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1" %*
 exit /b %ERRORLEVEL%
 "@ | Set-Content -LiteralPath $temporaryWrapper -NoNewline -Encoding ascii
     Move-Item -LiteralPath $temporaryWrapper -Destination $WrapperPath -Force
@@ -282,29 +316,29 @@ try {
         New-Item -ItemType Directory -Path $binaryDir -Force | Out-Null
         if ($env:ALTAIR_VEGA_BIN_SHA256) { $expectedChecksum = Get-NormalizedSha256 -Value $env:ALTAIR_VEGA_BIN_SHA256 }
         else {
-            $checksumDownload = Join-Path $binaryDir ('.checksum.download-' + $PID)
+            $checksumDownload = Join-Path $cacheRoot 'checksum.tmp'
             try { Download-AltairVegaFile -SourceUrl $ChecksumUrl -TargetPath $checksumDownload; $expectedChecksum = Get-NormalizedSha256 -Value (Get-Content -LiteralPath $checksumDownload -Raw) }
             finally { Remove-Item -LiteralPath $checksumDownload -Force -ErrorAction SilentlyContinue }
         }
         if (-not $expectedChecksum) { throw "no valid SHA-256 checksum was supplied for $Url" }
-        $binaryDownload = Join-Path $binaryDir ('.binary.download-' + $PID + '-' + [Guid]::NewGuid().ToString('N'))
+        $binaryDownload = Join-Path $cacheRoot 'binary.tmp'
+        $checksumTemporary = Join-Path $cacheRoot 'verified-sha256.tmp'
         try {
             Download-AltairVegaFile -SourceUrl $Url -TargetPath $binaryDownload
             $actualChecksum = (Get-FileHash -LiteralPath $binaryDownload -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($expectedChecksum -ne $actualChecksum) { throw "checksum verification failed for $Url" }
             Move-Item -LiteralPath $binaryDownload -Destination $binaryPath -Force
-            Set-Content -LiteralPath "$checksumPath.tmp.$PID" -Value $expectedChecksum -NoNewline -Encoding ascii
-            Move-Item -LiteralPath "$checksumPath.tmp.$PID" -Destination $checksumPath -Force
+            Set-Content -LiteralPath $checksumTemporary -Value $expectedChecksum -NoNewline -Encoding ascii
+            Move-Item -LiteralPath $checksumTemporary -Destination $checksumPath -Force
         }
         finally { Remove-Item -LiteralPath $binaryDownload -Force -ErrorAction SilentlyContinue }
     }
-    Write-AltairVegaWrapper -WrapperPath $wrapperPath -BinaryKey $binaryKey
+    Write-AltairVegaWrapper -WrapperPath $wrapperPath -CacheRoot $cacheRoot
 }
 finally { Exit-AltairVegaDownloadLock -Writer $lockWriter -LockPath $lockPath }
 
-if ($CommandArgs.Count -gt 0 -and $CommandArgs[0] -eq '--') { $CommandArgs = if ($CommandArgs.Count -gt 1) { $CommandArgs[1..($CommandArgs.Count - 1)] } else { @() } }
 [PSCustomObject]@{ BinRoot = $binRoot; WrapperPath = $wrapperPath; CommandArgs = $CommandArgs }
-} @args
+} $args
 
 if ($null -ne $_AltairVegaLauncherResult) {
     if ($_AltairVegaLauncherResult -isnot [PSCustomObject] -or
@@ -320,7 +354,8 @@ if ($null -ne $_AltairVegaLauncherResult) {
         Write-Host 'Altair Vega is available as altair-vega for this shell session. Use -Cleanup to remove inactive caches.'
         Remove-Variable _AltairVegaLauncherResult
     } else {
-        & $_AltairVegaLauncherResult.WrapperPath @($_AltairVegaLauncherResult.CommandArgs)
+        $_AltairVegaCommandArgs = $_AltairVegaLauncherResult.CommandArgs
+        & $_AltairVegaLauncherResult.WrapperPath @_AltairVegaCommandArgs
         Remove-Variable _AltairVegaLauncherResult
         exit $LASTEXITCODE
     }

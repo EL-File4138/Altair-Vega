@@ -153,14 +153,15 @@ acquire_lock() {
   exec 9>"$1" || return 1
   if command -v flock >/dev/null 2>&1; then
     flock -w 300 9 || { exec 9>&-; return 75; }
+    [ "$1" -ef /dev/fd/9 ] || { exec 9>&-; return 75; }
   elif command -v lockf >/dev/null 2>&1; then
     lockf -t 300 9 || { exec 9>&-; return 75; }
+    # On macOS /dev/fd entries are devices. Compare with fstat on the held FD.
+    /usr/bin/perl -e 'open(my $fd, "<&=", 9) or exit 1; my @fd = stat($fd); my @path = stat($ARGV[0]); exit !(@fd && @path && $fd[0] == $path[0] && $fd[1] == $path[1]);' "$1" || { exec 9>&-; return 75; }
   else
     exec 9>&-
     fail 'flock (Linux) or lockf (macOS) is required for safe launcher locking'; return 1
   fi
-  # Cleanup can unlink a scope while a waiter holds its old lock-file inode.
-  [ "$1" -ef /dev/fd/9 ] || { exec 9>&-; return 75; }
 }
 
 release_lock() { exec 9>&-; }
@@ -176,12 +177,13 @@ cache_root=\$(CDPATH= cd -- "\$(dirname "\$0")/../../.." && pwd)
 exec 9>"\$cache_root/.lock"
 if command -v flock >/dev/null 2>&1; then
   flock -w 300 9
+  [ "\$cache_root/.lock" -ef /dev/fd/9 ] || exit 75
 elif command -v lockf >/dev/null 2>&1; then
   lockf -t 300 9
+  /usr/bin/perl -e 'open(my \$fd, "<&=", 9) or exit 1; my @fd = stat(\$fd); my @path = stat(\$ARGV[0]); exit !(@fd && @path && \$fd[0] == \$path[0] && \$fd[1] == \$path[1]);' "\$cache_root/.lock" || exit 75
 else
   echo 'flock (Linux) or lockf (macOS) is required' >&2; exit 1
 fi
-[ "\$cache_root/.lock" -ef /dev/fd/9 ] || exit 75
 binary="\$cache_root/binaries/$key/altair-vega"
 expected=\$(awk '{ value=tolower(\$1); if (length(value) == 64 && value ~ /^[0-9a-f]+$/) { print value; exit } }' "\$binary.sha256")
 if command -v sha256sum >/dev/null 2>&1; then

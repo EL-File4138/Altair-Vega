@@ -337,10 +337,10 @@ mod tests {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/startup.sh");
         let file_url = format!("file://{}", stub.display());
         let command = format!(
-            ". '{}' --url '{}' --runtime-parent '{}'; altair-vega '{}'",
-            script.display(),
+            "set -- --url '{}' --runtime-parent '{}'; . '{}' && altair-vega '{}'",
             file_url,
             temp.path().display(),
+            script.display(),
             probe_dir.display()
         );
         let status = Command::new("sh").arg("-c").arg(command).status().unwrap();

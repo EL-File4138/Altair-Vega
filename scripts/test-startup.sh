@@ -4,6 +4,7 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 launcher="$repo_root/scripts/startup.sh"
 work=$(mktemp -d "${TMPDIR:-/tmp}/altair-vega-launcher-test.XXXXXX")
+work=$(CDPATH= cd -P -- "$work" && pwd)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 XDG_CACHE_HOME="$work/fallback"
 export XDG_CACHE_HOME
@@ -55,13 +56,15 @@ second_pid=$!
 wait "$first_pid"
 wait "$second_pid"
 
-sh -c '
+sh -ec '
   before=${TMPDIR-}
   shell_options_before=$(set -o)
-  . "$1" --url "$2" --runtime-parent "$3"
+  launcher=$1 probe=$4
+  set -- --url "$2" --runtime-parent "$3"
+  . "$launcher"
   [ "${TMPDIR-}" = "$before" ]
   [ "$(set -o)" = "$shell_options_before" ]
-  altair-vega "$4"
+  altair-vega "$probe"
 ' sh "$launcher" "file://$work/stub.sh" "$work/cache" "$work/probe"
 
 printf '%064d\n' 0 >"$work/invalid.sha256"
